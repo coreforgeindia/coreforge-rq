@@ -134,10 +134,9 @@ function readStorage<T>(key: string, fallback: T): T {
 }
 
 export default function Home() {
-  const supabaseEnabled = isSupabaseConfigured();
   const [hydrated, setHydrated] = useState(false);
   const [companyId, setCompanyId] = useState<string>("");
-  const [authLoading, setAuthLoading] = useState<boolean>(supabaseEnabled);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
 
   const [active, setActive] = useState<NavPage>("Overview");
   const [projects, setProjects] = useState<Project[]>(INITIAL_PROJECTS);
