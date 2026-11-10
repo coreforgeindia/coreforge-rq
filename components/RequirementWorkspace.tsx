@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -8,8 +8,10 @@ import {
   Check,
   CheckCircle2,
   Download,
+  Eye,
   FileDown,
   FileText,
+  Lock,
   MessageSquare,
   Paperclip,
   Pencil,
@@ -60,14 +62,10 @@ interface RequirementWorkspaceProps {
   team: TeamMember[];
   pricing: PricingSettings;
   coupons: Coupon[];
+  canEdit: boolean;
   onChangeStep: (step: RequirementStep) => void;
   onSelectProject: (projectId: string) => void;
   onBackToList: () => void;
-  onUpdateProject: (
-    projectId: string,
-    updater: (prev: Project) => Project,
-    activitySummary?: { action: string; type: string }
-  ) => void;
   onMoveStage: (project: Project, nextStage: Stage) => void;
   onTagMembers: (params: {
     project: Project;
@@ -78,7 +76,11 @@ interface RequirementWorkspaceProps {
     addComment?: boolean;
   }) => void;
   onOpenGlobalPricing: () => void;
-  onSaveProject: (project: Project, quiet?: boolean) => void;
+  onSaveProject: (
+    project: Project,
+    options?: { publish?: boolean; step?: RequirementStep }
+  ) => Promise<boolean>;
+  onDeleteDraft?: (project: Project) => void;
   onNotifyToast: (
     msg: string,
     variant?: "success" | "error" | "info",
@@ -98,7 +100,7 @@ const STEP_ITEMS: Array<{ key: RequirementStep; label: string }> = [
 const PACKAGE_ORDER: PackageName[] = ["Launch", "Growth", "Scale"];
 
 export function RequirementWorkspace({
-  project,
+  project: parentProject,
   projects,
   step,
   role,
@@ -106,18 +108,41 @@ export function RequirementWorkspace({
   team,
   pricing,
   coupons,
+  canEdit,
   onChangeStep,
   onSelectProject,
   onBackToList,
-  onUpdateProject,
   onMoveStage,
   onTagMembers,
   onOpenGlobalPricing,
   onSaveProject,
+  onDeleteDraft,
   onNotifyToast,
 }: RequirementWorkspaceProps) {
+  const [draftProject, setDraftProject] = useState<Project>(parentProject);
+  const [isDirty, setIsDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    if (!isDirty) {
+      setDraftProject(parentProject);
+    } else {
+      setDraftProject((prev) => ({
+        ...prev,
+        dbClientId: parentProject.dbClientId ?? prev.dbClientId,
+        dbRequirementId: parentProject.dbRequirementId ?? prev.dbRequirementId,
+        requirement: {
+          ...prev.requirement,
+          comments: parentProject.requirement.comments,
+        },
+      }));
+    }
+  }, [parentProject, isDirty]);
+
+  const project = draftProject;
   const req = project.requirement;
   const isAdmin = role === "Admin";
+  const isDraftMode = req.isDraft;
 
   const [couponInput, setCouponInput] = useState(req.couponCode || "");
   const [couponFeedback, setCouponFeedback] = useState<{
@@ -151,34 +176,23 @@ export function RequirementWorkspace({
 
   const patchRequirement = (
     updater: (prevReq: RequirementData) => RequirementData,
-    extraProjectPatch?: Partial<Project>,
-    activitySummary?: { action: string; type: string }
+    extraProjectPatch?: Partial<Project>
   ) => {
-    const nowLabel = new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
+    if (!canEdit) return;
+    setIsDirty(true);
+    setDraftProject((prev) => {
+      const nextReq = updater(prev.requirement);
+      const nextProgress = computeRequirementCompletion(nextReq);
+      return {
+        ...prev,
+        company: nextReq.companyName.trim() || prev.company,
+        client: nextReq.clientTeam.contactPerson.trim() || prev.client,
+        package: nextReq.packageSelected || prev.package,
+        progress: nextProgress,
+        ...extraProjectPatch,
+        requirement: nextReq,
+      };
     });
-    onUpdateProject(
-      project.id,
-      (prev) => {
-        const nextReq = updater({
-          ...prev.requirement,
-          lastSavedAt: `Today, ${nowLabel}`,
-        });
-        const nextProgress = computeRequirementCompletion(nextReq);
-        return {
-          ...prev,
-          company: nextReq.companyName.trim() || prev.company,
-          client: nextReq.clientTeam.contactPerson.trim() || prev.client,
-          package: nextReq.packageSelected || prev.package,
-          progress: nextProgress,
-          updated: "Just now",
-          ...extraProjectPatch,
-          requirement: nextReq,
-        };
-      },
-      activitySummary
-    );
   };
 
   const getMissingMandatoryFields = (): string[] => {
@@ -192,6 +206,19 @@ export function RequirementWorkspace({
     }
     if (!req.hasExistingWebsite) missing.push("Existing website (Yes/No)");
     if (!req.targetAudience.trim()) missing.push("Target audience");
+    return missing;
+  };
+
+  const getMissingForCompleteSubmission = (): string[] => {
+    const missing = getMissingMandatoryFields();
+    const hasPages =
+      req.selectedPages.length > 0 ||
+      req.customPages.some((cp) => cp.name.trim().length > 0);
+    if (!hasPages) missing.push("At least one sitemap or custom page (Step 02)");
+    if (!req.confirmed) missing.push("Client confirmation checkbox (Step 05)");
+    if (!req.approvedByName.trim()) {
+      missing.push("Digital acknowledgement full name (Step 05)");
+    }
     return missing;
   };
 
@@ -231,10 +258,14 @@ export function RequirementWorkspace({
       }
     }
     setValidationError("");
-    if (nextStep !== step) {
-      onSaveProject(project, true);
-    }
     onChangeStep(nextStep);
+  };
+
+  const confirmDiscardIfDirty = (): boolean => {
+    if (!canEdit || !isDirty) return true;
+    return confirm(
+      "You have unsaved changes that have not been sent to the database. Leave without saving?"
+    );
   };
 
   const applyCouponCode = (rawCode: string) => {
@@ -273,32 +304,23 @@ export function RequirementWorkspace({
       return;
     }
 
-    patchRequirement(
-      (prev) => ({ ...prev, couponCode: found.code }),
-      undefined,
-      {
-        action: `applied coupon ${found.code} (${formatCouponBenefit(found)}) to`,
-        type: "Updated",
-      }
-    );
+    patchRequirement((prev) => ({ ...prev, couponCode: found.code }));
     setCouponFeedback({
-      text: `Coupon ${found.code} applied: ${formatCouponBenefit(found)}.`,
+      text: `Coupon ${found.code} applied locally (${formatCouponBenefit(found)}). Click Save to store in database.`,
       tone: "success",
     });
-    onNotifyToast(`Coupon ${found.code} applied (${formatCouponBenefit(found)}).`);
+    onNotifyToast(
+      `Coupon ${found.code} applied (${formatCouponBenefit(found)}). Click Save to save.`
+    );
   };
 
   const removeCoupon = () => {
-    const oldCode = req.couponCode;
     setCouponInput("");
-    patchRequirement(
-      (prev) => ({ ...prev, couponCode: "" }),
-      undefined,
-      oldCode
-        ? { action: `removed coupon ${oldCode} from`, type: "Updated" }
-        : undefined
-    );
-    setCouponFeedback({ text: "Coupon removed.", tone: "muted" });
+    patchRequirement((prev) => ({ ...prev, couponCode: "" }));
+    setCouponFeedback({
+      text: "Coupon removed locally. Click Save to store in database.",
+      tone: "muted",
+    });
   };
 
   const togglePageSelection = (pageName: string) => {
@@ -353,6 +375,13 @@ export function RequirementWorkspace({
   };
 
   const handleQuickTagSubmit = () => {
+    if (isDraftMode || !project.dbRequirementId) {
+      onNotifyToast(
+        "Complete and submit this requirement before notifying teammates.",
+        "info"
+      );
+      return;
+    }
     if (quickTagIds.length === 0) {
       onNotifyToast("Select at least one team member to tag.");
       return;
@@ -386,18 +415,11 @@ export function RequirementWorkspace({
       type: f.type || "application/octet-stream",
       addedAt: "Just now",
     }));
-    patchRequirement(
-      (prev) => ({
-        ...prev,
-        files: [...prev.files, ...added],
-      }),
-      undefined,
-      {
-        action: `attached ${added.length} asset file(s) to`,
-        type: "Updated",
-      }
-    );
-    onNotifyToast(`${added.length} file(s) attached in browser preview.`);
+    patchRequirement((prev) => ({
+      ...prev,
+      files: [...prev.files, ...added],
+    }));
+    onNotifyToast(`${added.length} file(s) added. Click Save to store.`);
   };
 
   const handleExportJson = () => {
@@ -412,12 +434,17 @@ export function RequirementWorkspace({
     onNotifyToast(`Exported ${project.id} JSON.`);
   };
 
-  const handleSaveOnly = () => {
+  const buildSnapshotForSave = (publish: boolean): Project => {
     const nowLabel = new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
     });
-    const updatedProj: Project = {
+    const nextIsDraft = publish ? false : req.isDraft;
+    const submittedStamp =
+      publish && !req.submittedAt
+        ? new Date().toLocaleString()
+        : req.submittedAt;
+    return {
       ...project,
       company: req.companyName.trim() || project.company,
       client: req.clientTeam.contactPerson.trim() || project.client,
@@ -426,71 +453,78 @@ export function RequirementWorkspace({
       updated: "Just now",
       requirement: {
         ...req,
+        isDraft: nextIsDraft,
+        draftStep: step,
+        submittedAt: submittedStamp,
         lastSavedAt: `Today, ${nowLabel}`,
       },
     };
-    patchRequirement((prev) => ({
-      ...prev,
-      lastSavedAt: `Today, ${nowLabel}`,
-    }));
-    onSaveProject(updatedProj);
+  };
+
+  const handleSaveDraftOrChanges = async () => {
+    if (!canEdit || saving) return;
+    setSaving(true);
+    try {
+      const updatedProj = buildSnapshotForSave(false);
+      const ok = await onSaveProject(updatedProj, {
+        publish: false,
+        step,
+      });
+      if (ok) {
+        setDraftProject(updatedProj);
+        setIsDirty(false);
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handlePublishRequirement = async () => {
+    if (!canEdit || saving) return;
+    const missing = getMissingForCompleteSubmission();
+    if (missing.length > 0) {
+      const msg = `Complete all required details before submitting to the team: ${missing.join(", ")}. You can click "Save draft" to finish later.`;
+      setValidationError(msg);
+      onNotifyToast(msg, "error", "Requirement incomplete");
+      return;
+    }
+    setValidationError("");
+    setSaving(true);
+    try {
+      const publishedProj = buildSnapshotForSave(true);
+      const ok = await onSaveProject(publishedProj, {
+        publish: true,
+        step,
+      });
+      if (ok) {
+        setDraftProject(publishedProj);
+        setIsDirty(false);
+      }
+    } finally {
+      setSaving(false);
+    }
   };
 
   const handleOpenDocument = (mode: DocumentOutputMode) => {
-    const missingMandatory = getMissingMandatoryFields();
-    if (mode === "preview") {
-      if (!req.confirmed) missingMandatory.push("Client confirmation checkbox");
-      if (!req.approvedByName.trim()) {
-        missingMandatory.push("Digital acknowledgement full name");
-      }
-    }
-
-    if (missingMandatory.length > 0) {
-      const msg = `Complete these required fields first: ${missingMandatory.join(", ")}.`;
-      setValidationError(msg);
-      onNotifyToast(msg, "error", "Incomplete questions");
-      return;
-    }
-
-    setValidationError("");
-    const submittedStamp = req.submittedAt || new Date().toLocaleString();
-    const updatedReq: RequirementData = {
-      ...req,
-      submittedAt: mode === "preview" ? new Date().toLocaleString() : submittedStamp,
-    };
-    const updatedProj: Project = {
-      ...project,
-      requirement: updatedReq,
-    };
-
-    if (mode === "preview") {
-      patchRequirement(
-        (prev) => ({
-          ...prev,
-          submittedAt: updatedReq.submittedAt,
-        }),
-        undefined,
-        {
-          action: `generated requirement document & approval for`,
-          type: "Updated",
+    if (canEdit) {
+      const missingMandatory = getMissingMandatoryFields();
+      if (mode === "preview") {
+        if (!req.confirmed) missingMandatory.push("Client confirmation checkbox");
+        if (!req.approvedByName.trim()) {
+          missingMandatory.push("Digital acknowledgement full name");
         }
-      );
-
-      if (req.taggedMemberIds.length > 0) {
-        onTagMembers({
-          project: updatedProj,
-          memberIds: req.taggedMemberIds,
-          step: "review",
-          message: `Requirement document approved by ${req.approvedByName} for ${req.companyName || project.company}.`,
-          addComment: false,
-        });
       }
+      if (missingMandatory.length > 0) {
+        const msg = `Complete these required fields first: ${missingMandatory.join(", ")}.`;
+        setValidationError(msg);
+        onNotifyToast(msg, "error", "Incomplete questions");
+        return;
+      }
+      setValidationError("");
     }
-
-    onSaveProject(updatedProj);
 
     const htmlDoc = generateRequirementDocumentHtml(
-      updatedProj,
+      project,
       pricing,
       coupons,
       team,
@@ -539,6 +573,30 @@ export function RequirementWorkspace({
     return rows;
   }, [req.answers, req.featureChoices, req.featureDetails]);
 
+  if (!canEdit) {
+    return (
+      <ReadOnlyRequirementPreview
+        project={project}
+        projects={projects}
+        isAdmin={isAdmin}
+        team={team}
+        quote={quote}
+        taggedMembers={taggedMembers}
+        filledAnswersList={filledAnswersList}
+        onBackToList={onBackToList}
+        onSelectProject={onSelectProject}
+        onExportJson={handleExportJson}
+        onOpenDocument={handleOpenDocument}
+      />
+    );
+  }
+
+  const saveButtonLabel = saving
+    ? "Saving..."
+    : isDraftMode
+    ? "Save draft"
+    : "Save";
+
   return (
     <div className="req-workspace">
       {/* Top Action Header */}
@@ -547,7 +605,9 @@ export function RequirementWorkspace({
           <button
             type="button"
             className="secondary compact-btn"
-            onClick={onBackToList}
+            onClick={() => {
+              if (confirmDiscardIfDirty()) onBackToList();
+            }}
           >
             <ArrowLeft size={14} /> All requirements
           </button>
@@ -557,28 +617,39 @@ export function RequirementWorkspace({
             <select
               aria-label="Switch active requirement"
               value={project.id}
-              onChange={(e) => onSelectProject(e.target.value)}
+              onChange={(e) => {
+                if (confirmDiscardIfDirty()) onSelectProject(e.target.value);
+              }}
             >
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.company} ({p.id})
+                  {p.requirement.isDraft ? " — Draft" : ""}
                 </option>
               ))}
             </select>
           </div>
 
-          <select
-            aria-label="Project stage"
-            className="stage-select-pill"
-            value={project.stage}
-            onChange={(e) => onMoveStage(project, e.target.value as Stage)}
-          >
-            <option value="Requirements">Requirements</option>
-            <option value="Building">Building</option>
-            <option value="Completed">Completed</option>
-          </select>
+          {!isDraftMode ? (
+            <select
+              aria-label="Project stage"
+              className="stage-select-pill"
+              value={project.stage}
+              onChange={(e) => onMoveStage(project, e.target.value as Stage)}
+            >
+              <option value="Requirements">Requirements</option>
+              <option value="Building">Building</option>
+              <option value="Completed">Completed</option>
+            </select>
+          ) : (
+            <span className="soft-tag">Private draft · Only visible to you</span>
+          )}
 
-          <span className="small muted">Saved: {req.lastSavedAt}</span>
+          <span className={`small ${isDirty ? "error-text" : "muted"}`}>
+            {isDirty
+              ? "Unsaved changes (not sent to DB)"
+              : `Saved: ${req.lastSavedAt}`}
+          </span>
         </div>
 
         <div className="req-top-right">
@@ -608,12 +679,18 @@ export function RequirementWorkspace({
               <button
                 type="button"
                 className="secondary compact-btn"
+                disabled={isDraftMode || !project.dbRequirementId}
+                title={
+                  isDraftMode
+                    ? "Submit this requirement before notifying teammates"
+                    : "Tag & notify teammates"
+                }
                 onClick={() => setShowTagPopover((v) => !v)}
               >
                 <UserPlus size={13} /> Tag people
               </button>
 
-              {showTagPopover && (
+              {showTagPopover && !isDraftMode && (
                 <div className="tag-popover">
                   <div className="tag-popover-head">
                     <b>Tag &amp; notify teammates</b>
@@ -674,14 +751,16 @@ export function RequirementWorkspace({
             </div>
           </div>
 
-          <button
-            type="button"
-            className={`secondary compact-btn ${showComments ? "active-toggle" : ""}`}
-            onClick={() => setShowComments((v) => !v)}
-          >
-            <MessageSquare size={13} /> Notes &amp; @mentions (
-            {req.comments.length})
-          </button>
+          {!isDraftMode && project.dbRequirementId && (
+            <button
+              type="button"
+              className={`secondary compact-btn ${showComments ? "active-toggle" : ""}`}
+              onClick={() => setShowComments((v) => !v)}
+            >
+              <MessageSquare size={13} /> Notes &amp; @mentions (
+              {req.comments.length})
+            </button>
+          )}
 
           <button
             type="button"
@@ -691,12 +770,23 @@ export function RequirementWorkspace({
             <Download size={13} /> Export JSON
           </button>
 
+          {isDraftMode && onDeleteDraft && (
+            <button
+              type="button"
+              className="secondary compact-btn danger-text"
+              onClick={() => onDeleteDraft(project)}
+            >
+              <Trash2 size={13} /> Discard draft
+            </button>
+          )}
+
           <button
             type="button"
             className="primary compact-btn"
-            onClick={handleSaveOnly}
+            disabled={saving}
+            onClick={() => void handleSaveDraftOrChanges()}
           >
-            <Save size={13} /> Save
+            <Save size={13} /> {saveButtonLabel}
           </button>
         </div>
       </div>
@@ -969,11 +1059,7 @@ export function RequirementWorkspace({
                             ...prev,
                             packageSelected: pkgName,
                           }),
-                          { package: pkgName },
-                          {
-                            action: `selected ${pkgName} package for`,
-                            type: "Updated",
-                          }
+                          { package: pkgName }
                         );
                       }}
                     >
@@ -1173,16 +1259,17 @@ export function RequirementWorkspace({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={handleSaveOnly}
+                    disabled={saving}
+                    onClick={() => void handleSaveDraftOrChanges()}
                   >
-                    <Save size={14} /> Save
+                    <Save size={14} /> {saveButtonLabel}
                   </button>
                   <button
                     type="button"
                     className="primary"
                     onClick={() => handleGoToStep("pages")}
                   >
-                    Save &amp; continue <ArrowRight size={14} />
+                    Continue <ArrowRight size={14} />
                   </button>
                 </div>
               </div>
@@ -1533,20 +1620,13 @@ export function RequirementWorkspace({
                           )})`}
                           value={req.customPriceOverride ?? ""}
                           onChange={(e) =>
-                            patchRequirement(
-                              (prev) => ({
-                                ...prev,
-                                customPriceOverride:
-                                  e.target.value === ""
-                                    ? null
-                                    : Math.max(0, Number(e.target.value) || 0),
-                              }),
-                              undefined,
-                              {
-                                action: "edited custom package pricing for",
-                                type: "Updated",
-                              }
-                            )
+                            patchRequirement((prev) => ({
+                              ...prev,
+                              customPriceOverride:
+                                e.target.value === ""
+                                  ? null
+                                  : Math.max(0, Number(e.target.value) || 0),
+                            }))
                           }
                         />
                       </label>
@@ -1621,16 +1701,17 @@ export function RequirementWorkspace({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={handleSaveOnly}
+                    disabled={saving}
+                    onClick={() => void handleSaveDraftOrChanges()}
                   >
-                    <Save size={14} /> Save
+                    <Save size={14} /> {saveButtonLabel}
                   </button>
                   <button
                     type="button"
                     className="primary"
                     onClick={() => handleGoToStep("requirements")}
                   >
-                    Save &amp; continue <ArrowRight size={14} />
+                    Continue <ArrowRight size={14} />
                   </button>
                 </div>
               </div>
@@ -1672,21 +1753,23 @@ export function RequirementWorkspace({
                           of your project.
                         </p>
                       </div>
-                      <button
-                        type="button"
-                        className={`secondary compact-btn ${isTagOpen ? "active-toggle" : ""}`}
-                        onClick={() =>
-                          setActiveSectionTag(isTagOpen ? null : sec.title)
-                        }
-                      >
-                        <AtSign size={12} /> Tag teammate
-                        {sectionComments.length > 0
-                          ? ` (${sectionComments.length})`
-                          : ""}
-                      </button>
+                      {!isDraftMode && project.dbRequirementId && (
+                        <button
+                          type="button"
+                          className={`secondary compact-btn ${isTagOpen ? "active-toggle" : ""}`}
+                          onClick={() =>
+                            setActiveSectionTag(isTagOpen ? null : sec.title)
+                          }
+                        >
+                          <AtSign size={12} /> Tag teammate
+                          {sectionComments.length > 0
+                            ? ` (${sectionComments.length})`
+                            : ""}
+                        </button>
+                      )}
                     </div>
 
-                    {isTagOpen && (
+                    {isTagOpen && !isDraftMode && (
                       <div className="section-tag-drawer">
                         <MentionComposer
                           compact
@@ -1850,16 +1933,17 @@ export function RequirementWorkspace({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={handleSaveOnly}
+                    disabled={saving}
+                    onClick={() => void handleSaveDraftOrChanges()}
                   >
-                    <Save size={14} /> Save
+                    <Save size={14} /> {saveButtonLabel}
                   </button>
                   <button
                     type="button"
                     className="primary"
                     onClick={() => handleGoToStep("team")}
                   >
-                    Save &amp; continue <ArrowRight size={14} />
+                    Continue <ArrowRight size={14} />
                   </button>
                 </div>
               </div>
@@ -2022,19 +2106,16 @@ export function RequirementWorkspace({
                     Requirement owner
                     <select
                       value={project.ownerId}
+                      disabled={!isAdmin}
                       onChange={(e) => {
                         const member = team.find(
                           (m) => m.id === e.target.value
                         );
                         if (!member) return;
-                        patchRequirement(
-                          (prev) => prev,
-                          { ownerId: member.id, owner: member.name },
-                          {
-                            action: `changed requirement owner to ${member.name} on`,
-                            type: "Updated",
-                          }
-                        );
+                        patchRequirement((prev) => prev, {
+                          ownerId: member.id,
+                          owner: member.name,
+                        });
                       }}
                     >
                       {activeTeam.map((m) => (
@@ -2055,20 +2136,14 @@ export function RequirementWorkspace({
                         );
                         if (!member) return;
                         patchRequirement(
-                          (prev) => prev,
-                          { assignedToId: member.id, assignedTo: member.name },
-                          {
-                            action: `assigned ${member.name} to`,
-                            type: "Updated",
-                          }
+                          (prev) => ({
+                            ...prev,
+                            taggedMemberIds: Array.from(
+                              new Set([...prev.taggedMemberIds, member.id])
+                            ),
+                          }),
+                          { assignedToId: member.id, assignedTo: member.name }
                         );
-                        onTagMembers({
-                          project,
-                          memberIds: [member.id],
-                          step: "team",
-                          message: `${currentUser.name} assigned you to ${project.company}.`,
-                          addComment: false,
-                        });
                       }}
                     >
                       {activeTeam.map((m) => (
@@ -2081,7 +2156,7 @@ export function RequirementWorkspace({
                 </div>
 
                 <label className="small muted" style={{ display: "block", marginBottom: 8 }}>
-                  Tag teammates in this requirement (click to toggle &amp; notify):
+                  Tag teammates on this requirement (stored on Save):
                 </label>
                 <div className="inline-check-row">
                   {activeTeam.map((member) => {
@@ -2092,22 +2167,14 @@ export function RequirementWorkspace({
                         key={member.id}
                         className={`tag-pill-btn ${isTagged ? "tagged" : ""}`}
                         onClick={() => {
-                          if (isTagged) {
-                            patchRequirement((prev) => ({
-                              ...prev,
-                              taggedMemberIds: prev.taggedMemberIds.filter(
-                                (id) => id !== member.id
-                              ),
-                            }));
-                          } else {
-                            onTagMembers({
-                              project,
-                              memberIds: [member.id],
-                              step: "team",
-                              message: `${currentUser.name} tagged ${member.name} on Team & assets for ${project.company}.`,
-                              addComment: false,
-                            });
-                          }
+                          patchRequirement((prev) => ({
+                            ...prev,
+                            taggedMemberIds: isTagged
+                              ? prev.taggedMemberIds.filter(
+                                  (id) => id !== member.id
+                                )
+                              : [...prev.taggedMemberIds, member.id],
+                          }));
                         }}
                       >
                         {isTagged ? <Check size={12} /> : <AtSign size={12} />}
@@ -2123,8 +2190,7 @@ export function RequirementWorkspace({
                   <div>
                     <h2>Content &amp; asset uploads</h2>
                     <p>
-                      Attach files in this browser preview or share a Google
-                      Drive link.
+                      Attach project files or share a Google Drive link.
                     </p>
                   </div>
                 </div>
@@ -2201,9 +2267,10 @@ export function RequirementWorkspace({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={handleSaveOnly}
+                    disabled={saving}
+                    onClick={() => void handleSaveDraftOrChanges()}
                   >
-                    <Save size={14} /> Save
+                    <Save size={14} /> {saveButtonLabel}
                   </button>
                   <button
                     type="button"
@@ -2461,10 +2528,22 @@ export function RequirementWorkspace({
                   <button
                     type="button"
                     className="secondary"
-                    onClick={handleSaveOnly}
+                    disabled={saving}
+                    onClick={() => void handleSaveDraftOrChanges()}
                   >
-                    <Save size={14} /> Save
+                    <Save size={14} /> {saveButtonLabel}
                   </button>
+                  {isDraftMode && (
+                    <button
+                      type="button"
+                      className="primary"
+                      disabled={saving}
+                      onClick={() => void handlePublishRequirement()}
+                    >
+                      <CheckCircle2 size={14} />{" "}
+                      {saving ? "Submitting..." : "Complete & submit to team"}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="secondary"
@@ -2488,7 +2567,7 @@ export function RequirementWorkspace({
                   </button>
                   <button
                     type="button"
-                    className="primary"
+                    className={isDraftMode ? "secondary" : "primary"}
                     onClick={() => handleOpenDocument("preview")}
                   >
                     <FileText size={14} /> Generate
@@ -2593,4 +2672,440 @@ export function RequirementWorkspace({
     </div>
   );
 }
+
+function ReadOnlyRequirementPreview({
+  project,
+  projects,
+  isAdmin,
+  team,
+  quote,
+  taggedMembers,
+  filledAnswersList,
+  onBackToList,
+  onSelectProject,
+  onExportJson,
+  onOpenDocument,
+}: {
+  project: Project;
+  projects: Project[];
+  isAdmin: boolean;
+  team: TeamMember[];
+  quote: ReturnType<typeof calculateQuote>;
+  taggedMembers: TeamMember[];
+  filledAnswersList: Array<[string, string]>;
+  onBackToList: () => void;
+  onSelectProject: (projectId: string) => void;
+  onExportJson: () => void;
+  onOpenDocument: (mode: DocumentOutputMode) => void;
+}) {
+  const req = project.requirement;
+  const purposeText =
+    req.websitePurpose === "Other" && req.websitePurposeOther
+      ? `Other: ${req.websitePurposeOther}`
+      : req.websitePurpose || "—";
+
+  return (
+    <div className="req-workspace">
+      <div className="req-top-bar surface">
+        <div className="req-top-left">
+          <button
+            type="button"
+            className="secondary compact-btn"
+            onClick={onBackToList}
+          >
+            <ArrowLeft size={14} /> All requirements
+          </button>
+
+          <div className="req-project-select-wrap">
+            <span className="eyebrow">{project.id}</span>
+            <select
+              aria-label="Switch active requirement"
+              value={project.id}
+              onChange={(e) => onSelectProject(e.target.value)}
+            >
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.company} ({p.id})
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <span className={`stage-pill ${project.stage.toLowerCase()}`}>
+            <i /> {project.stage}
+          </span>
+          <span className="soft-tag">
+            <Eye size={12} /> Full detailed preview (read-only)
+          </span>
+        </div>
+
+        <div className="req-top-right">
+          <button
+            type="button"
+            className="secondary compact-btn"
+            onClick={onExportJson}
+          >
+            <Download size={13} /> Export JSON
+          </button>
+          <button
+            type="button"
+            className="secondary compact-btn"
+            onClick={() => onOpenDocument("print")}
+          >
+            <Printer size={13} /> Print
+          </button>
+          <button
+            type="button"
+            className="primary compact-btn"
+            onClick={() => onOpenDocument("pdf")}
+          >
+            <FileDown size={13} /> Print as PDF
+          </button>
+        </div>
+      </div>
+
+      <div className="note-box" style={{ marginTop: 0, marginBottom: 16 }}>
+        <Lock size={17} />
+        <div>
+          <b>Read-only requirement preview</b>
+          <p>
+            Created by <b>{project.owner}</b>. Only the requirement creator or
+            an Admin can edit this requirement.
+          </p>
+        </div>
+      </div>
+
+      <section className="surface" style={{ marginBottom: 14 }}>
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">01 · PACKAGE &amp; BUSINESS PROFILE</div>
+            <h2>{req.companyName || project.company}</h2>
+          </div>
+          <span className="status-pill-outline">
+            {project.progress}% complete
+          </span>
+        </div>
+        <div className="review-row">
+          <span>Project ID</span>
+          <b>{project.id}</b>
+        </div>
+        <div className="review-row">
+          <span>Requirement owner</span>
+          <b>{project.owner}</b>
+        </div>
+        <div className="review-row">
+          <span>Assigned developer</span>
+          <b>{project.assignedTo}</b>
+        </div>
+        <div className="review-row">
+          <span>Selected package</span>
+          <b>
+            {req.packageSelected || "Not selected"} (
+            {formatINR(quote.basePackagePrice)})
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Business type</span>
+          <b>{req.businessType || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>What the business does</span>
+          <b>{req.businessDescription || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Primary website purpose</span>
+          <b>{purposeText}</b>
+        </div>
+        <div className="review-row">
+          <span>Existing website</span>
+          <b>
+            {req.hasExistingWebsite || "—"}
+            {req.hasExistingWebsite === "Yes" && req.existingWebsiteUrl
+              ? ` (${req.existingWebsiteUrl})`
+              : ""}
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Target audience</span>
+          <b>{req.targetAudience || "—"}</b>
+        </div>
+      </section>
+
+      <section className="surface" style={{ marginBottom: 14 }}>
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">02 · SITEMAP, PAGES &amp; QUOTATION</div>
+            <h2>Pages &amp; pricing summary</h2>
+          </div>
+        </div>
+        <div className="review-row">
+          <span>Included page allowance</span>
+          <b>{quote.totalPageAllowance} pages</b>
+        </div>
+        <div className="review-row">
+          <span>Selected pages ({req.selectedPages.length})</span>
+          <b>
+            {req.selectedPages.length ? req.selectedPages.join(", ") : "None"}
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Additional pages requested</span>
+          <b>
+            {quote.extraPages} ({req.extraPagesStatus})
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Coupon applied</span>
+          <b>
+            {quote.appliedCoupon
+              ? `${quote.appliedCoupon.code} (${formatCouponBenefit(quote.appliedCoupon)})`
+              : "None"}
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Website package price</span>
+          <b>{formatINR(quote.basePackagePrice)}</b>
+        </div>
+        <div className="review-row">
+          <span>Additional page charges</span>
+          <b>
+            {quote.extraPagesCost === null
+              ? "Pending configuration"
+              : formatINR(quote.extraPagesCost)}
+          </b>
+        </div>
+        {quote.discountAmount > 0 && (
+          <div className="review-row">
+            <span>Discount</span>
+            <b className="success-text">-{formatINR(quote.discountAmount)}</b>
+          </div>
+        )}
+        <div className="review-row">
+          <span>Hosting</span>
+          <b>
+            {quote.hostingIncluded ? "Included in package (₹0)" : "Separate"} ·{" "}
+            {quote.hostingFrequency}
+          </b>
+        </div>
+        {isAdmin && quote.internalHostingCost !== null && (
+          <div className="review-row">
+            <span>Internal hosting cost (Admin)</span>
+            <b>{formatINR(quote.internalHostingCost)}</b>
+          </div>
+        )}
+        <div className="review-row">
+          <span>Estimated total</span>
+          <b>{formatINR(quote.estimatedTotal)}</b>
+        </div>
+        {req.pricingAdjustmentNote && (
+          <div className="review-row">
+            <span>Pricing adjustment note</span>
+            <b>{req.pricingAdjustmentNote}</b>
+          </div>
+        )}
+
+        {req.customPages.length > 0 && (
+          <div style={{ marginTop: 14 }}>
+            <div className="eyebrow" style={{ marginBottom: 8 }}>
+              CUSTOM PAGES ({req.customPages.length})
+            </div>
+            {req.customPages.map((cp, idx) => (
+              <div key={cp.id} className="custom-page-card">
+                <div className="custom-page-head">
+                  <b>
+                    {idx + 1}. {cp.name || "Untitled custom page"}
+                  </b>
+                </div>
+                <div className="review-row">
+                  <span>Purpose</span>
+                  <b>{cp.purpose || "—"}</b>
+                </div>
+                <div className="review-row">
+                  <span>Description</span>
+                  <b>{cp.description || "—"}</b>
+                </div>
+                <div className="review-row">
+                  <span>Functionality</span>
+                  <b>{cp.functionality || "—"}</b>
+                </div>
+                <div className="review-row">
+                  <span>Reference URL</span>
+                  <b>{cp.url || "—"}</b>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="surface" style={{ marginBottom: 14 }}>
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">03 · DETAILED REQUIREMENTS &amp; FEATURES</div>
+            <h2>Specification responses</h2>
+          </div>
+        </div>
+        {REQUIREMENT_SECTIONS.map((sec, idx) => {
+          const sectionRows = sec.questions.map((q, qIdx) => ({
+            q,
+            ans: req.answers[`${sec.title}_${qIdx}`]?.trim() || "",
+          }));
+          return (
+            <div key={sec.id} style={{ marginBottom: 14 }}>
+              <b style={{ display: "block", marginBottom: 6 }}>
+                {idx + 1}. {sec.title}
+              </b>
+              {sectionRows.map((row) => (
+                <div className="review-row" key={row.q}>
+                  <span>{row.q}</span>
+                  <b>{row.ans || "—"}</b>
+                </div>
+              ))}
+            </div>
+          );
+        })}
+
+        <div style={{ marginTop: 14 }}>
+          <b style={{ display: "block", marginBottom: 6 }}>
+            {req.packageSelected || "Launch"} features
+          </b>
+          {PACKAGE_FEATURES[req.packageSelected || "Launch"].map((feature) => {
+            const choice = req.featureChoices[feature] || "—";
+            const detail = req.featureDetails[feature] || "";
+            return (
+              <div className="review-row" key={feature}>
+                <span>{feature}</span>
+                <b>{choice === "Yes" && detail ? `Yes — ${detail}` : choice}</b>
+              </div>
+            );
+          })}
+        </div>
+
+        {filledAnswersList.length === 0 && (
+          <p className="small muted">No questionnaire answers recorded yet.</p>
+        )}
+
+        <div className="review-row" style={{ marginTop: 10 }}>
+          <span>Agency internal notes</span>
+          <b>{req.agencyInternalNotes || "—"}</b>
+        </div>
+      </section>
+
+      <section className="surface" style={{ marginBottom: 14 }}>
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">04 · CLIENT TEAM &amp; ASSETS</div>
+            <h2>Contacts, assignment &amp; deliverables</h2>
+          </div>
+        </div>
+        <div className="review-row">
+          <span>Primary contact</span>
+          <b>{req.clientTeam.contactPerson || project.client || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Contact email</span>
+          <b>{req.clientTeam.contactEmail || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Contact phone</span>
+          <b>{req.clientTeam.contactPhone || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Decision-maker</span>
+          <b>{req.clientTeam.decisionMaker || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Content provider</span>
+          <b>{req.clientTeam.contentProvider || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Design approver</span>
+          <b>{req.clientTeam.designApprover || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Final approver</span>
+          <b>{req.clientTeam.finalApprover || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Tagged teammates</span>
+          <b>
+            {taggedMembers.length
+              ? taggedMembers.map((m) => m.name).join(", ")
+              : "None"}
+          </b>
+        </div>
+        <div className="review-row">
+          <span>Google Drive link</span>
+          <b>{req.driveLink || "—"}</b>
+        </div>
+        <div className="review-row">
+          <span>Attached assets</span>
+          <b>
+            {req.files.length
+              ? req.files.map((f) => f.name).join(", ")
+              : "None"}
+          </b>
+        </div>
+      </section>
+
+      <section className="surface">
+        <div className="section-head">
+          <div>
+            <div className="eyebrow">05 · APPROVAL &amp; NOTES</div>
+            <h2>Acknowledgement &amp; activity notes</h2>
+          </div>
+        </div>
+        <div className="review-row">
+          <span>Client confirmation</span>
+          <b>{req.confirmed ? "Confirmed" : "Pending"}</b>
+        </div>
+        <div className="review-row">
+          <span>Approved by</span>
+          <b>{req.approvedByName || "Pending"}</b>
+        </div>
+        <div className="review-row">
+          <span>Submitted timestamp</span>
+          <b>{req.submittedAt || "Pending"}</b>
+        </div>
+        <div className="review-row">
+          <span>Last saved</span>
+          <b>{req.lastSavedAt}</b>
+        </div>
+
+        {req.comments.length > 0 && (
+          <div className="comment-feed" style={{ marginTop: 14 }}>
+            {req.comments.map((c) => {
+              const tagged = team.filter((m) =>
+                c.taggedMemberIds.includes(m.id)
+              );
+              return (
+                <div key={c.id} className="comment-card">
+                  <div className="comment-meta">
+                    <b>{c.authorName}</b>
+                    <span className="soft-tag">
+                      {c.step}
+                      {c.section ? ` · ${c.section}` : ""}
+                    </span>
+                    <small className="muted">{c.createdAt}</small>
+                  </div>
+                  <p>{c.text}</p>
+                  {tagged.length > 0 && (
+                    <div className="comment-tags">
+                      {tagged.map((t) => (
+                        <span key={t.id} className="tagged-chip readonly">
+                          <AtSign size={10} /> {t.name}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
 

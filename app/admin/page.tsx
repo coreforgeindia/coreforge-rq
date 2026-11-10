@@ -11,7 +11,7 @@ import {
 
 export default function AdminEntry() {
   const router = useRouter();
-  const [email, setEmail] = useState("admin@coreforgeindia.com");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -72,6 +72,7 @@ export default function AdminEntry() {
             type="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
+            placeholder="name@company.com"
             required
           />
         </label>
@@ -98,9 +99,6 @@ export default function AdminEntry() {
             </div>
           </div>
         )}
-        <p className="small muted">
-          Admin email: <code>admin@coreforgeindia.com</code>
-        </p>
         <Link href="/" className="text-button">
           <ArrowLeft size={14} /> Back to workspace
         </Link>

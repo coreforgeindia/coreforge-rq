@@ -16,6 +16,7 @@ import {
   Filter,
   FolderKanban,
   GripVertical,
+  KeyRound,
   LayoutDashboard,
   MoreHorizontal,
   Pencil,
@@ -65,8 +66,10 @@ import {
   appendActivityInDb,
   createClientRequirementInDb,
   createCouponInDb,
+  createWorkspaceUserInDb,
   deleteCouponInDb,
   deleteProjectInDb,
+  deleteWorkspaceUserInDb,
   fetchWorkspaceSnapshot,
   insertCommentAndNotificationsInDb,
   insertNotificationsInDb,
@@ -75,7 +78,9 @@ import {
   savePricingInDb,
   saveRequirementInDb,
   toggleCouponInDb,
+  updateOwnPasswordInDb,
   updateStageInDb,
+  updateUserPasswordInDb,
 } from "@/lib/supabase/portal-api";
 
 type NavPage =
@@ -146,10 +151,9 @@ export default function Home() {
   );
   const [soundEnabled, setSoundEnabled] = useState(true);
 
-  const [currentUserId, setCurrentUserId] = useState<string>("usr-admin");
-  const [roleOverride, setRoleOverride] = useState<Role | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string>("");
   const [loggedIn, setLoggedIn] = useState(false);
-  const [loginEmail, setLoginEmail] = useState("admin@coreforgeindia.com");
+  const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
   const [loginError, setLoginError] = useState("");
 
@@ -182,7 +186,20 @@ export default function Home() {
     name: "",
     email: "",
     role: "Developer" as Role,
+    password: "",
   });
+  const [inviteSubmitting, setInviteSubmitting] = useState(false);
+
+  const [passwordModalUser, setPasswordModalUser] =
+    useState<TeamMember | null>(null);
+  const [userNewPassword, setUserNewPassword] = useState("");
+  const [userConfirmPassword, setUserConfirmPassword] = useState("");
+  const [userPasswordBusy, setUserPasswordBusy] = useState(false);
+  const [deletingUserId, setDeletingUserId] = useState<string | null>(null);
+
+  const [ownNewPassword, setOwnNewPassword] = useState("");
+  const [ownConfirmPassword, setOwnConfirmPassword] = useState("");
+  const [ownPasswordBusy, setOwnPasswordBusy] = useState(false);
 
   const notify = useCallback(
     (
@@ -205,28 +222,11 @@ export default function Home() {
     [soundEnabled]
   );
 
-  // Hydrate either from Supabase or clean localStorage
+  // Hydrate from Supabase Auth session
   useEffect(() => {
+    setSoundEnabled(readStorage(STORAGE_KEYS.sound, true));
     const supabase = getSupabaseBrowserClient();
     if (!supabase) {
-      const savedProjects = readStorage(STORAGE_KEYS.projects, INITIAL_PROJECTS);
-      setProjects(savedProjects);
-      setPricing(readStorage(STORAGE_KEYS.pricing, DEFAULT_PRICING));
-      setCoupons(readStorage(STORAGE_KEYS.coupons, DEFAULT_COUPONS));
-      setTeam(readStorage(STORAGE_KEYS.team, INITIAL_TEAM));
-      setActivities(readStorage(STORAGE_KEYS.activities, INITIAL_ACTIVITIES));
-      setNotifications(
-        readStorage(STORAGE_KEYS.notifications, INITIAL_NOTIFICATIONS)
-      );
-      setSoundEnabled(readStorage(STORAGE_KEYS.sound, true));
-      const savedSessionUser = readStorage<string>(STORAGE_KEYS.sessionUser, "");
-      if (savedSessionUser) {
-        setCurrentUserId(savedSessionUser);
-        setLoggedIn(true);
-      }
-      if (savedProjects[0]) {
-        setActiveProjectId(savedProjects[0].id);
-      }
       setHydrated(true);
       setAuthLoading(false);
       return;
@@ -284,46 +284,6 @@ export default function Home() {
     };
   }, []);
 
-  // Persist local preview state when Supabase is not configured
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(
-      STORAGE_KEYS.projects,
-      JSON.stringify(projects)
-    );
-  }, [hydrated, supabaseEnabled, projects]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(STORAGE_KEYS.pricing, JSON.stringify(pricing));
-  }, [hydrated, supabaseEnabled, pricing]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(STORAGE_KEYS.coupons, JSON.stringify(coupons));
-  }, [hydrated, supabaseEnabled, coupons]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(STORAGE_KEYS.team, JSON.stringify(team));
-  }, [hydrated, supabaseEnabled, team]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(
-      STORAGE_KEYS.activities,
-      JSON.stringify(activities)
-    );
-  }, [hydrated, supabaseEnabled, activities]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(
-      STORAGE_KEYS.notifications,
-      JSON.stringify(notifications)
-    );
-  }, [hydrated, supabaseEnabled, notifications]);
-
   useEffect(() => {
     if (!hydrated) return;
     window.localStorage.setItem(
@@ -331,14 +291,6 @@ export default function Home() {
       JSON.stringify(soundEnabled)
     );
   }, [hydrated, soundEnabled]);
-
-  useEffect(() => {
-    if (!hydrated || supabaseEnabled) return;
-    window.localStorage.setItem(
-      STORAGE_KEYS.sessionUser,
-      JSON.stringify(loggedIn ? currentUserId : "")
-    );
-  }, [hydrated, supabaseEnabled, loggedIn, currentUserId]);
 
   // Unlock Web Audio on first interaction
   useEffect(() => {
@@ -351,14 +303,18 @@ export default function Home() {
     };
   }, []);
 
-  // Realtime listener in Supabase mode OR cross-tab storage listener in local mode
+  // Realtime listener in Supabase mode
   useEffect(() => {
     const supabase = getSupabaseBrowserClient();
     if (supabase && loggedIn && companyId) {
       const refreshQuietly = async () => {
         try {
           const snap = await fetchWorkspaceSnapshot(supabase, currentUserId);
-          setProjects(snap.projects);
+          setTeam(snap.team);
+          setProjects((prev) => {
+            const unsavedLocal = prev.filter((p) => !p.dbRequirementId);
+            return [...unsavedLocal, ...snap.projects];
+          });
           setActivities(snap.activities);
           setPricing(snap.pricing);
           setCoupons(snap.coupons);
@@ -423,53 +379,41 @@ export default function Home() {
         void supabase.removeChannel(channel);
       };
     }
-
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === STORAGE_KEYS.notifications && e.newValue) {
-        try {
-          const next = JSON.parse(e.newValue) as PortalNotification[];
-          setNotifications(next);
-          const newest = next[0];
-          if (newest && newest.recipientId === currentUserId && !newest.read) {
-            playNotificationSound("mention", soundEnabled);
-            notify(newest.message, "info", newest.title);
-          }
-        } catch {
-          // Ignore malformed storage updates
-        }
-      }
-      if (e.key === STORAGE_KEYS.projects && e.newValue) {
-        try {
-          setProjects(JSON.parse(e.newValue) as Project[]);
-        } catch {
-          // Ignore
-        }
-      }
-      if (e.key === STORAGE_KEYS.pricing && e.newValue) {
-        try {
-          setPricing(JSON.parse(e.newValue) as PricingSettings);
-        } catch {
-          // Ignore
-        }
-      }
-      if (e.key === STORAGE_KEYS.coupons && e.newValue) {
-        try {
-          setCoupons(JSON.parse(e.newValue) as Coupon[]);
-        } catch {
-          // Ignore
-        }
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    return () => window.removeEventListener("storage", onStorage);
   }, [companyId, currentUserId, loggedIn, notify, soundEnabled, team]);
 
   const currentUser = useMemo(
-    () => team.find((m) => m.id === currentUserId) ?? team[0] ?? INITIAL_TEAM[0],
+    () =>
+      team.find((m) => m.id === currentUserId) ??
+      team[0] ?? {
+        id: currentUserId || "",
+        name: "User",
+        email: "",
+        role: "Developer" as Role,
+        active: true,
+        lastActive: "",
+      },
     [team, currentUserId]
   );
 
-  const role: Role = roleOverride ?? currentUser.role;
+  const role: Role = currentUser.role;
+
+  const canEditProject = useCallback(
+    (p: Project) => role === "Admin" || p.ownerId === currentUser.id,
+    [role, currentUser.id]
+  );
+
+  const visibleProjects = useMemo(
+    () =>
+      projects.filter(
+        (p) => !p.requirement.isDraft || p.ownerId === currentUser.id
+      ),
+    [projects, currentUser.id]
+  );
+
+  const publishedProjects = useMemo(
+    () => visibleProjects.filter((p) => !p.requirement.isDraft),
+    [visibleProjects]
+  );
 
   const log = useCallback(
     (action: string, target: string, type: string) => {
@@ -490,104 +434,37 @@ export default function Home() {
 
   const filtered = useMemo(
     () =>
-      projects.filter(
+      visibleProjects.filter(
         (p) =>
           (stageFilter === "All stages" || p.stage === stageFilter) &&
           `${p.id} ${p.client} ${p.company} ${p.owner} ${p.assignedTo}`
             .toLowerCase()
             .includes(search.toLowerCase())
       ),
-    [projects, search, stageFilter]
+    [visibleProjects, search, stageFilter]
   );
 
   const activeProject = useMemo(
-    () => projects.find((p) => p.id === activeProjectId) ?? projects[0] ?? null,
-    [projects, activeProjectId]
+    () =>
+      visibleProjects.find((p) => p.id === activeProjectId) ??
+      visibleProjects[0] ??
+      null,
+    [visibleProjects, activeProjectId]
   );
 
   const openRequirementEditor = (
     projectId: string,
-    step: RequirementStep = "overview"
+    step?: RequirementStep
   ) => {
+    const target = visibleProjects.find((p) => p.id === projectId);
+    const resolvedStep =
+      step ??
+      (target?.requirement.isDraft ? target.requirement.draftStep : "overview");
     setActiveProjectId(projectId);
-    setRequirementStep(step);
+    setRequirementStep(resolvedStep);
     setActive("Requirement Editor");
     setSelected(null);
   };
-
-  const updateProject = useCallback(
-    (
-      projectId: string,
-      updater: (prev: Project) => Project,
-      activitySummary?: { action: string; type: string }
-    ) => {
-      let targetCompany = "";
-      setProjects((prev) =>
-        prev.map((p) => {
-          if (p.id !== projectId) return p;
-          const next = updater(p);
-          targetCompany = next.company;
-          return next;
-        })
-      );
-      if (activitySummary && targetCompany) {
-        log(activitySummary.action, targetCompany, activitySummary.type);
-      }
-    },
-    [log]
-  );
-
-  const handleSaveProject = useCallback(
-    async (projectToSave: Project, quiet = false) => {
-      setProjects((prev) =>
-        prev.map((p) => (p.id === projectToSave.id ? projectToSave : p))
-      );
-      if (!quiet) {
-        log("saved requirement for", projectToSave.company, "Updated");
-      }
-
-      const supabase = getSupabaseBrowserClient();
-      if (supabase && companyId) {
-        try {
-          await saveRequirementInDb(
-            supabase,
-            companyId,
-            currentUser.id,
-            projectToSave,
-            pricing,
-            coupons
-          );
-          if (!quiet) {
-            await appendActivityInDb(
-              supabase,
-              companyId,
-              currentUser.id,
-              "requirement_updated",
-              "requirement",
-              projectToSave.company,
-              "saved requirement for"
-            );
-          }
-        } catch (err) {
-          notify(
-            err instanceof Error ? err.message : "Failed to save to Supabase.",
-            "error",
-            "Save error"
-          );
-          return;
-        }
-      }
-
-      if (!quiet) {
-        playNotificationSound("success", soundEnabled);
-        notify(
-          `Saved ${projectToSave.company} (${projectToSave.id}).`,
-          "success"
-        );
-      }
-    },
-    [companyId, coupons, currentUser.id, log, notify, pricing, soundEnabled]
-  );
 
   const pushNotifications = useCallback(
     (
@@ -599,6 +476,156 @@ export default function Home() {
       playNotificationSound(soundKind, soundEnabled);
     },
     [soundEnabled]
+  );
+
+  const handleSaveProject = useCallback(
+    async (
+      projectToSave: Project,
+      options?: { publish?: boolean; step?: RequirementStep }
+    ): Promise<boolean> => {
+      if (!canEditProject(projectToSave)) {
+        notify(
+          "You only have read-only preview access to this requirement.",
+          "error",
+          "Permission denied"
+        );
+        return false;
+      }
+
+      const existing = projects.find((p) => p.id === projectToSave.id);
+      const wasDraft = existing ? existing.requirement.isDraft : true;
+      const isPublishing =
+        Boolean(options?.publish) ||
+        (wasDraft && !projectToSave.requirement.isDraft);
+      const savedCopy: Project = { ...projectToSave };
+
+      const supabase = getSupabaseBrowserClient();
+      if (supabase && companyId) {
+        try {
+          if (!savedCopy.dbRequirementId || !savedCopy.dbClientId) {
+            const ids = await createClientRequirementInDb(
+              supabase,
+              companyId,
+              currentUser.id,
+              savedCopy,
+              pricing,
+              coupons
+            );
+            savedCopy.dbClientId = ids.dbClientId;
+            savedCopy.dbRequirementId = ids.dbRequirementId;
+          } else {
+            await saveRequirementInDb(
+              supabase,
+              companyId,
+              currentUser.id,
+              savedCopy,
+              pricing,
+              coupons
+            );
+            if (!savedCopy.requirement.isDraft) {
+              await appendActivityInDb(
+                supabase,
+                companyId,
+                currentUser.id,
+                isPublishing ? "requirement_created" : "requirement_updated",
+                "requirement",
+                savedCopy.company,
+                isPublishing
+                  ? "submitted requirement for"
+                  : "saved requirement for"
+              );
+            }
+          }
+
+          if (isPublishing) {
+            const recipientIds = Array.from(
+              new Set([
+                savedCopy.assignedToId,
+                ...savedCopy.requirement.taggedMemberIds,
+              ])
+            ).filter((id) => id && id !== currentUser.id);
+            const alerts: PortalNotification[] = team
+              .filter((m) => recipientIds.includes(m.id))
+              .map((member, idx) => ({
+                id: `ntf-pub-${Date.now()}-${idx}`,
+                recipientId: member.id,
+                recipientName: member.name,
+                actorId: currentUser.id,
+                actorName: currentUser.name,
+                projectId: savedCopy.id,
+                projectCompany: savedCopy.company,
+                step: "overview",
+                title: `New requirement submitted: ${savedCopy.company}`,
+                message: `${currentUser.name} completed and shared the requirement for ${savedCopy.company}.`,
+                createdAt: "Just now",
+                read: false,
+                kind: "assignment",
+              }));
+            if (alerts.length > 0) {
+              const persistedAlerts = await insertNotificationsInDb(
+                supabase,
+                companyId,
+                currentUser.id,
+                savedCopy.dbRequirementId,
+                alerts
+              );
+              pushNotifications(persistedAlerts, "mention");
+            }
+          }
+        } catch (err) {
+          notify(
+            err instanceof Error ? err.message : "Failed to save to database.",
+            "error",
+            "Save error"
+          );
+          return false;
+        }
+      }
+
+      setProjects((prev) =>
+        prev.some((p) => p.id === savedCopy.id)
+          ? prev.map((p) => (p.id === savedCopy.id ? savedCopy : p))
+          : [savedCopy, ...prev]
+      );
+
+      if (!savedCopy.requirement.isDraft) {
+        log(
+          isPublishing ? "submitted requirement for" : "saved requirement for",
+          savedCopy.company,
+          isPublishing ? "Created" : "Updated"
+        );
+      }
+
+      playNotificationSound("success", soundEnabled);
+      if (savedCopy.requirement.isDraft) {
+        notify(
+          `Draft saved privately (${savedCopy.company}). Only you can view it until submitted.`,
+          "success"
+        );
+      } else if (isPublishing) {
+        notify(
+          `Requirement submitted and shared with your team (${savedCopy.company}).`,
+          "success"
+        );
+      } else {
+        notify(`Saved ${savedCopy.company} (${savedCopy.id}).`, "success");
+      }
+      return true;
+    },
+    [
+      canEditProject,
+      companyId,
+      coupons,
+      currentUser.id,
+      currentUser.name,
+      log,
+      notify,
+      pricing,
+      projects,
+      pushNotifications,
+      soundEnabled,
+      team,
+    ]
   );
 
   const handleTagMembers = useCallback(
@@ -636,23 +663,26 @@ export default function Home() {
           }
         : null;
 
-      updateProject(project.id, (prev) => {
-        const mergedTagged = Array.from(
-          new Set([...prev.requirement.taggedMemberIds, ...uniqueIds])
-        );
-        return {
-          ...prev,
-          updated: "Just now",
-          requirement: {
-            ...prev.requirement,
-            taggedMemberIds: mergedTagged,
-            comments: newComment
-              ? [newComment, ...prev.requirement.comments]
-              : prev.requirement.comments,
-            lastSavedAt: `Today, ${nowTime}`,
-          },
-        };
-      });
+      setProjects((prev) =>
+        prev.map((p) => {
+          if (p.id !== project.id) return p;
+          const mergedTagged = Array.from(
+            new Set([...p.requirement.taggedMemberIds, ...uniqueIds])
+          );
+          return {
+            ...p,
+            updated: "Just now",
+            requirement: {
+              ...p.requirement,
+              taggedMemberIds: mergedTagged,
+              comments: newComment
+                ? [newComment, ...p.requirement.comments]
+                : p.requirement.comments,
+              lastSavedAt: `Today, ${nowTime}`,
+            },
+          };
+        })
+      );
 
       const targetMembers = team.filter((m) => uniqueIds.includes(m.id));
       const createdAlerts: PortalNotification[] = targetMembers.map(
@@ -724,7 +754,6 @@ export default function Home() {
       notify,
       pushNotifications,
       team,
-      updateProject,
     ]
   );
 
@@ -822,7 +851,7 @@ export default function Home() {
     notify(`${project.company} moved to ${stage}.`, "success");
   };
 
-  const createProject = async () => {
+  const createProject = () => {
     if (!form.client.trim() || !form.company.trim()) {
       notify(
         "Client contact name and company name are required.",
@@ -842,12 +871,15 @@ export default function Home() {
       assignedToId: currentUser.id,
       assignedTo: currentUser.name,
       stage: "Requirements",
-      updated: "Just now",
+      updated: "Not saved yet",
       package: form.package,
       progress: 25,
       requirement: createEmptyRequirement({
         packageSelected: form.package,
         companyName: form.company.trim(),
+        isDraft: true,
+        draftStep: "package",
+        lastSavedAt: "Not saved yet",
         clientTeam: {
           contactPerson: form.client.trim(),
           contactEmail: form.email.trim(),
@@ -860,47 +892,30 @@ export default function Home() {
       }),
     };
 
-    const supabase = getSupabaseBrowserClient();
-    if (supabase && companyId) {
-      try {
-        const ids = await createClientRequirementInDb(
-          supabase,
-          companyId,
-          currentUser.id,
-          newProj,
-          pricing
-        );
-        newProj.dbClientId = ids.dbClientId;
-        newProj.dbRequirementId = ids.dbRequirementId;
-      } catch (err) {
-        notify(
-          err instanceof Error
-            ? err.message
-            : "Failed to create requirement in Supabase.",
-          "error",
-          "Database error"
-        );
-        return;
-      }
-    }
-
     setProjects((prev) => [newProj, ...prev]);
-    log("created a requirement for", newProj.company, "Created");
     setForm({ client: "", company: "", package: "Launch", email: "" });
     setShowNew(false);
     openRequirementEditor(newProj.id, "package");
-    notify("Requirement created. Complete steps 01–05.", "success");
+    notify(
+      "Draft opened locally. Nothing is sent to the database until you click Save draft or Submit.",
+      "info"
+    );
   };
 
   const deleteProject = async (p: Project) => {
-    if (role !== "Admin") {
+    const canDeleteOwnDraft =
+      p.requirement.isDraft && p.ownerId === currentUser.id;
+    if (role !== "Admin" && !canDeleteOwnDraft) {
       notify("Only admins can delete projects.", "error", "Permission required");
       return;
     }
-    if (!confirm(`Delete ${p.company}? This action cannot be undone.`)) return;
+    const promptMsg = p.requirement.isDraft
+      ? `Discard draft for ${p.company}?`
+      : `Delete ${p.company}? This action cannot be undone.`;
+    if (!confirm(promptMsg)) return;
 
     const supabase = getSupabaseBrowserClient();
-    if (supabase && companyId) {
+    if (supabase && companyId && p.dbClientId) {
       try {
         await deleteProjectInDb(supabase, companyId, currentUser.id, p);
       } catch (err) {
@@ -914,12 +929,14 @@ export default function Home() {
     }
 
     setProjects((prev) => prev.filter((x) => x.id !== p.id));
-    log("deleted requirement for", p.company, "Deleted");
+    if (!p.requirement.isDraft) {
+      log("deleted requirement for", p.company, "Deleted");
+    }
     setSelected(null);
     if (active === "Requirement Editor" && activeProjectId === p.id) {
       setActive("Requirements");
     }
-    notify("Project deleted.", "info");
+    notify(p.requirement.isDraft ? "Draft discarded." : "Project deleted.", "info");
   };
 
   const handleSavePricing = async (nextPricing: PricingSettings) => {
@@ -1023,64 +1040,187 @@ export default function Home() {
     notify(`Coupon ${found.code} removed.`, "info");
   };
 
-  const handleInviteMember = () => {
-    if (!inviteForm.name.trim() || !inviteForm.email.trim()) {
-      notify("Name and email are required.", "error", "Incomplete fields");
-      return;
-    }
-    if (supabaseEnabled) {
+  const handleInviteMember = async () => {
+    if (role !== "Admin") return;
+    if (
+      !inviteForm.name.trim() ||
+      !inviteForm.email.trim() ||
+      inviteForm.password.length < 6
+    ) {
       notify(
-        "Create additional Supabase Auth users via Supabase Dashboard or an Admin Edge Function.",
-        "info",
-        "Supabase Auth"
+        "Full name, email, and a password of at least 6 characters are required.",
+        "error",
+        "Incomplete fields"
       );
-      setShowInvite(false);
       return;
     }
-    const created: TeamMember = {
-      id: `usr-${Date.now()}`,
-      name: inviteForm.name.trim(),
-      email: inviteForm.email.trim(),
-      role: inviteForm.role,
-      active: true,
-      lastActive: "Invited just now",
-    };
-    setTeam((prev) => [...prev, created]);
-    log(`invited team member ${created.name}`, "Workspace Team", "Created");
-    setInviteForm({ name: "", email: "", role: "Developer" });
-    setShowInvite(false);
-    playNotificationSound("success", soundEnabled);
-    notify(
-      `${created.name} added and ready to be @tagged in requirements.`,
-      "success"
-    );
+
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) {
+      notify(
+        "Supabase connection is required to create workspace users.",
+        "error"
+      );
+      return;
+    }
+
+    setInviteSubmitting(true);
+    try {
+      const userId = await createWorkspaceUserInDb(supabase, {
+        fullName: inviteForm.name.trim(),
+        email: inviteForm.email.trim(),
+        password: inviteForm.password,
+        role: inviteForm.role,
+      });
+      const created: TeamMember = {
+        id: userId,
+        name: inviteForm.name.trim(),
+        email: inviteForm.email.trim().toLowerCase(),
+        role: inviteForm.role,
+        active: true,
+        lastActive: "Just created",
+      };
+      setTeam((prev) => [...prev, created]);
+      log(
+        `created user account for ${created.name}`,
+        created.email,
+        "Created"
+      );
+      setInviteForm({ name: "", email: "", role: "Developer", password: "" });
+      setShowInvite(false);
+      playNotificationSound("success", soundEnabled);
+      notify(`User account created for ${created.name}.`, "success");
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : "Failed to create user. Ensure supabase/migration_v2.sql was executed.",
+        "error",
+        "User creation failed"
+      );
+    } finally {
+      setInviteSubmitting(false);
+    }
   };
 
-  const switchActiveMember = (member: TeamMember) => {
-    if (supabaseEnabled) {
-      notify(
-        "In Supabase mode, sign out and sign in with the user's account.",
-        "info"
-      );
-      setShowProfile(false);
-      setShowTopProfile(false);
+  const handleChangeUserPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (role !== "Admin" || !passwordModalUser) return;
+    if (userNewPassword.length < 6) {
+      notify("Password must be at least 6 characters.", "error");
       return;
     }
-    setCurrentUserId(member.id);
-    setRoleOverride(null);
-    setShowProfile(false);
-    setShowTopProfile(false);
-    const unread = notifications.filter(
-      (n) => n.recipientId === member.id && !n.read
-    ).length;
-    if (unread > 0) {
-      playNotificationSound("mention", soundEnabled);
-      notify(
-        `Switched to ${member.name} · ${unread} unread notification(s).`,
-        "info"
+    if (userNewPassword !== userConfirmPassword) {
+      notify("Passwords do not match.", "error");
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+
+    setUserPasswordBusy(true);
+    try {
+      await updateUserPasswordInDb(
+        supabase,
+        passwordModalUser.id,
+        userNewPassword
       );
-    } else {
-      notify(`Switched workspace user to ${member.name} (${member.role}).`, "info");
+      log(
+        `changed password for ${passwordModalUser.name}`,
+        passwordModalUser.email,
+        "Updated"
+      );
+      playNotificationSound("success", soundEnabled);
+      notify(`Password updated for ${passwordModalUser.name}.`, "success");
+      setPasswordModalUser(null);
+      setUserNewPassword("");
+      setUserConfirmPassword("");
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : "Failed to change password. Ensure supabase/migration_v2.sql was executed.",
+        "error",
+        "Password update failed"
+      );
+    } finally {
+      setUserPasswordBusy(false);
+    }
+  };
+
+  const handleDeleteUser = async (member: TeamMember) => {
+    if (role !== "Admin") return;
+    if (member.id === currentUser.id) {
+      notify("You cannot delete your own active admin account.", "error");
+      return;
+    }
+    if (
+      !confirm(
+        `Delete user ${member.name} (${member.email})? Existing projects created by this user will be preserved.`
+      )
+    ) {
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+
+    setDeletingUserId(member.id);
+    try {
+      await deleteWorkspaceUserInDb(supabase, member.id);
+      setTeam((prev) => prev.filter((m) => m.id !== member.id));
+      setProjects((prev) =>
+        prev.map((p) => ({
+          ...p,
+          ownerId: p.ownerId === member.id ? currentUser.id : p.ownerId,
+          owner: p.ownerId === member.id ? currentUser.name : p.owner,
+          assignedToId: p.assignedToId === member.id ? "" : p.assignedToId,
+          assignedTo:
+            p.assignedToId === member.id ? "Unassigned" : p.assignedTo,
+        }))
+      );
+      log(`deleted user account for ${member.name}`, member.email, "Deleted");
+      notify(`Deleted user ${member.name}.`, "info");
+    } catch (err) {
+      notify(
+        err instanceof Error
+          ? err.message
+          : "Failed to delete user. Ensure supabase/migration_v2.sql was executed.",
+        "error",
+        "Delete failed"
+      );
+    } finally {
+      setDeletingUserId(null);
+    }
+  };
+
+  const handleChangeOwnPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (role !== "Admin") return;
+    if (ownNewPassword.length < 6) {
+      notify("New password must be at least 6 characters.", "error");
+      return;
+    }
+    if (ownNewPassword !== ownConfirmPassword) {
+      notify("New passwords do not match.", "error");
+      return;
+    }
+    const supabase = getSupabaseBrowserClient();
+    if (!supabase) return;
+
+    setOwnPasswordBusy(true);
+    try {
+      await updateOwnPasswordInDb(supabase, ownNewPassword);
+      setOwnNewPassword("");
+      setOwnConfirmPassword("");
+      playNotificationSound("success", soundEnabled);
+      notify("Your administrator password has been updated.", "success");
+    } catch (err) {
+      notify(
+        err instanceof Error ? err.message : "Failed to update password.",
+        "error",
+        "Password update failed"
+      );
+    } finally {
+      setOwnPasswordBusy(false);
     }
   };
 
@@ -1095,60 +1235,51 @@ export default function Home() {
     }
 
     const supabase = getSupabaseBrowserClient();
-    if (supabase) {
-      setAuthLoading(true);
-      try {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password: loginPassword,
-        });
-        if (error || !data.user) {
-          throw new Error(error?.message || "Invalid login credentials.");
-        }
-        const snap = await fetchWorkspaceSnapshot(supabase, data.user.id);
-        setCompanyId(snap.companyId);
-        setTeam(snap.team);
-        setPricing(snap.pricing);
-        setCoupons(snap.coupons);
-        setProjects(snap.projects);
-        setActivities(snap.activities);
-        setNotifications(snap.notifications);
-        setCurrentUserId(snap.currentProfile.id);
-        if (snap.projects[0]) setActiveProjectId(snap.projects[0].id);
-        await appendActivityInDb(
-          supabase,
-          snap.companyId,
-          snap.currentProfile.id,
-          "login",
-          "session",
-          snap.currentProfile.email,
-          "signed in"
-        );
-        setLoggedIn(true);
-        notify(`Welcome back, ${snap.currentProfile.name}.`, "success");
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : "Sign in failed.";
-        setLoginError(msg);
-        playNotificationSound("alert", soundEnabled);
-      } finally {
-        setAuthLoading(false);
-      }
-      return;
-    }
-
-    // Local preview sign-in before Supabase env keys are configured
-    const matched = team.find((m) => m.email.toLowerCase() === email);
-    if (!matched) {
+    if (!supabase) {
       setLoginError(
-        "Unrecognized workspace user. Use admin@coreforgeindia.com or gagan@coreforgeindia.com."
+        "Authentication service is not configured. Contact your administrator."
       );
       playNotificationSound("alert", soundEnabled);
       return;
     }
-    setCurrentUserId(matched.id);
-    setRoleOverride(null);
-    setLoggedIn(true);
-    notify(`Signed in as ${matched.name} (${matched.role}).`, "success");
+
+    setAuthLoading(true);
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password: loginPassword,
+      });
+      if (error || !data.user) {
+        throw new Error(error?.message || "Invalid login credentials.");
+      }
+      const snap = await fetchWorkspaceSnapshot(supabase, data.user.id);
+      setCompanyId(snap.companyId);
+      setTeam(snap.team);
+      setPricing(snap.pricing);
+      setCoupons(snap.coupons);
+      setProjects(snap.projects);
+      setActivities(snap.activities);
+      setNotifications(snap.notifications);
+      setCurrentUserId(snap.currentProfile.id);
+      if (snap.projects[0]) setActiveProjectId(snap.projects[0].id);
+      await appendActivityInDb(
+        supabase,
+        snap.companyId,
+        snap.currentProfile.id,
+        "login",
+        "session",
+        snap.currentProfile.email,
+        "signed in"
+      );
+      setLoggedIn(true);
+      notify(`Welcome back, ${snap.currentProfile.name}.`, "success");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Sign in failed.";
+      setLoginError(msg);
+      playNotificationSound("alert", soundEnabled);
+    } finally {
+      setAuthLoading(false);
+    }
   };
 
   const handleLogout = async () => {
@@ -1193,9 +1324,7 @@ export default function Home() {
           <div className="brand-mark">
             CORE<span>FORGE.</span>
           </div>
-          <div className="eyebrow">
-            {supabaseEnabled ? "SUPABASE LIVE AUTH" : "FRESH WORKSPACE PREVIEW"}
-          </div>
+          <div className="eyebrow">COREFORGE WORKSPACE</div>
           <h1>Sign in to CoreForge</h1>
           <p className="muted">
             Access projects, requirements and team activity.
@@ -1206,7 +1335,7 @@ export default function Home() {
               type="email"
               value={loginEmail}
               onChange={(e) => setLoginEmail(e.target.value)}
-              placeholder="admin@coreforgeindia.com"
+              placeholder="name@company.com"
               required
             />
           </label>
@@ -1229,32 +1358,6 @@ export default function Home() {
             {authLoading ? "Signing in..." : "Sign in"}{" "}
             <ArrowUpRight size={16} />
           </button>
-
-          {!supabaseEnabled && (
-            <div className="login-quick-switch">
-              <small className="muted">Quick fill user:</small>
-              <div className="row-actions" style={{ justifyContent: "center" }}>
-                <button
-                  type="button"
-                  className="secondary compact-btn"
-                  onClick={() => setLoginEmail("admin@coreforgeindia.com")}
-                >
-                  Admin
-                </button>
-                <button
-                  type="button"
-                  className="secondary compact-btn"
-                  onClick={() => setLoginEmail("gagan@coreforgeindia.com")}
-                >
-                  Gagan
-                </button>
-              </div>
-              <small>
-                Local preview mode · Paste Supabase URL &amp; anon key in{" "}
-                <code>.env.local</code> to switch to live DB.
-              </small>
-            </div>
-          )}
         </form>
       </main>
     );
@@ -1275,25 +1378,25 @@ export default function Home() {
   const stats = [
     {
       label: "Total projects",
-      value: projects.length,
-      sub: "Active workspace clients",
+      value: publishedProjects.length,
+      sub: "Submitted workspace clients",
       icon: BriefcaseBusiness,
     },
     {
       label: "Requirements",
-      value: projects.filter((p) => p.stage === "Requirements").length,
+      value: publishedProjects.filter((p) => p.stage === "Requirements").length,
       sub: "Awaiting scope confirmation",
       icon: ClipboardList,
     },
     {
       label: "Building",
-      value: projects.filter((p) => p.stage === "Building").length,
+      value: publishedProjects.filter((p) => p.stage === "Building").length,
       sub: "Currently in development",
       icon: FolderKanban,
     },
     {
       label: "Completed",
-      value: projects.filter((p) => p.stage === "Completed").length,
+      value: publishedProjects.filter((p) => p.stage === "Completed").length,
       sub: "Delivered projects",
       icon: CheckCircle2,
     },
@@ -1309,18 +1412,14 @@ export default function Home() {
           <div className="brand-mark">
             CORE<span>FORGE.</span>
           </div>
-          <span className="workspace-tag">
-            {supabaseEnabled ? "LIVE DB" : "WORKSPACE"}
-          </span>
+          <span className="workspace-tag">PORTAL</span>
         </div>
 
         <div className="company-switch">
           <div className="company-icon">C</div>
           <div>
             <b>CoreForge LLP</b>
-            <small>
-              {supabaseEnabled ? "Supabase connected" : "Fresh workspace"}
-            </small>
+            <small>Company workspace</small>
           </div>
           <ChevronDown size={15} />
         </div>
@@ -1411,33 +1510,6 @@ export default function Home() {
 
             {showProfile && (
               <div className="profile-pop">
-                {!supabaseEnabled && (
-                  <>
-                    <div className="profile-pop-label">
-                      SWITCH USER (TEST TAGS)
-                    </div>
-                    {team.map((m) => (
-                      <button
-                        key={m.id}
-                        className={
-                          m.id === currentUser.id ? "active-user-row" : ""
-                        }
-                        onClick={() => switchActiveMember(m)}
-                      >
-                        {m.name} ({m.role})
-                      </button>
-                    ))}
-                    <div className="profile-pop-divider" />
-                  </>
-                )}
-                <button
-                  onClick={() => {
-                    setRoleOverride(role === "Admin" ? "Developer" : "Admin");
-                    setShowProfile(false);
-                  }}
-                >
-                  Preview as {role === "Admin" ? "Developer" : "Admin"}
-                </button>
                 <button onClick={handleLogout}>Log out</button>
               </div>
             )}
@@ -1485,10 +1557,6 @@ export default function Home() {
               currentUserId={currentUser.id}
               soundEnabled={soundEnabled}
               onToggleSound={() => setSoundEnabled((prev) => !prev)}
-              onTestSound={() => {
-                playNotificationSound("mention", true);
-                notify("Played notification chime sound.", "info");
-              }}
               onMarkRead={(id) => {
                 setNotifications((prev) =>
                   prev.map((n) => (n.id === id ? { ...n, read: true } : n))
@@ -1530,29 +1598,9 @@ export default function Home() {
               {showTopProfile && (
                 <div className="profile-pop topbar-profile-pop">
                   <div className="profile-pop-label">
-                    ACTIVE USER · {currentUser.name}
+                    ACTIVE USER · {currentUser.name} ({role})
                   </div>
-                  {!supabaseEnabled &&
-                    team.map((m) => (
-                      <button
-                        key={m.id}
-                        className={
-                          m.id === currentUser.id ? "active-user-row" : ""
-                        }
-                        onClick={() => switchActiveMember(m)}
-                      >
-                        {m.name} ({m.role})
-                      </button>
-                    ))}
                   <div className="profile-pop-divider" />
-                  <button
-                    onClick={() => {
-                      setRoleOverride(role === "Admin" ? "Developer" : "Admin");
-                      setShowTopProfile(false);
-                    }}
-                  >
-                    Preview as {role === "Admin" ? "Developer" : "Admin"}
-                  </button>
                   <button onClick={handleLogout}>Log out</button>
                 </div>
               )}
@@ -1606,8 +1654,9 @@ export default function Home() {
                   <ProjectTable
                     projects={filtered.slice(0, 5)}
                     emptyText="No projects yet. Click '+ New requirement' to add your first client."
+                    canEdit={canEditProject}
                     onOpen={(p) => setSelected(p)}
-                    onEdit={(p) => openRequirementEditor(p.id, "package")}
+                    onEdit={(p) => openRequirementEditor(p.id)}
                   />
                 </section>
 
@@ -1644,12 +1693,13 @@ export default function Home() {
                     className="text-button"
                     onClick={() => setActive("Team")}
                   >
-                    Manage team <ArrowUpRight size={14} />
+                    {role === "Admin" ? "Manage team" : "View team"}{" "}
+                    <ArrowUpRight size={14} />
                   </button>
                 </div>
                 <div className="workload">
                   {team.map((member) => {
-                    const count = projects.filter(
+                    const count = publishedProjects.filter(
                       (p) =>
                         p.assignedToId === member.id || p.ownerId === member.id
                     ).length;
@@ -1658,7 +1708,7 @@ export default function Home() {
                         key={member.id}
                         name={member.name}
                         count={count}
-                        total={Math.max(1, projects.length)}
+                        total={Math.max(1, publishedProjects.length)}
                       />
                     );
                   })}
@@ -1716,8 +1766,9 @@ export default function Home() {
                 <ProjectTable
                   projects={filtered}
                   emptyText="No requirements yet. Click '+ New requirement' to create one."
+                  canEdit={canEditProject}
                   onOpen={(p) => setSelected(p)}
-                  onEdit={(p) => openRequirementEditor(p.id, "package")}
+                  onEdit={(p) => openRequirementEditor(p.id)}
                   onDelete={deleteProject}
                   admin={role === "Admin"}
                 />
@@ -1729,21 +1780,22 @@ export default function Home() {
             <RequirementWorkspace
               key={activeProject.id}
               project={activeProject}
-              projects={projects}
+              projects={visibleProjects}
               step={requirementStep}
               role={role}
               currentUser={currentUser}
               team={team}
               pricing={pricing}
               coupons={coupons}
+              canEdit={canEditProject(activeProject)}
               onChangeStep={setRequirementStep}
-              onSelectProject={(id) => openRequirementEditor(id, requirementStep)}
+              onSelectProject={(id) => openRequirementEditor(id)}
               onBackToList={() => setActive("Requirements")}
-              onUpdateProject={updateProject}
               onMoveStage={moveProject}
               onTagMembers={handleTagMembers}
               onOpenGlobalPricing={() => setActive("Coupons & pricing")}
               onSaveProject={handleSaveProject}
+              onDeleteDraft={deleteProject}
               onNotifyToast={notify}
             />
           )}
@@ -1755,8 +1807,8 @@ export default function Home() {
                   <div className="eyebrow">DELIVERY PIPELINE</div>
                   <h1>Project board</h1>
                   <p className="muted">
-                    Drag and drop project cards between Requirements, Building,
-                    and Completed.
+                    Drag and drop submitted project cards between Requirements,
+                    Building, and Completed.
                   </p>
                 </div>
                 <button className="primary" onClick={() => setShowNew(true)}>
@@ -1766,7 +1818,7 @@ export default function Home() {
 
               <div className="kanban">
                 {STAGES.map((stage) => {
-                  const stageProjects = projects.filter(
+                  const stageProjects = publishedProjects.filter(
                     (p) => p.stage === stage
                   );
                   return (
@@ -1797,7 +1849,7 @@ export default function Home() {
                         setDragOverStage(null);
                         setDraggedProjectId(null);
                         if (!droppedId) return;
-                        const targetProj = projects.find(
+                        const targetProj = publishedProjects.find(
                           (x) => x.id === droppedId
                         );
                         if (targetProj) {
@@ -1822,64 +1874,73 @@ export default function Home() {
                           Drop project card here
                         </div>
                       ) : (
-                        stageProjects.map((p) => (
-                          <article
-                            key={p.id}
-                            draggable
-                            onDragStart={(e) => {
-                              setDraggedProjectId(p.id);
-                              e.dataTransfer.effectAllowed = "move";
-                              e.dataTransfer.setData("text/plain", p.id);
-                            }}
-                            onDragEnd={() => {
-                              setDraggedProjectId(null);
-                              setDragOverStage(null);
-                            }}
-                            className={`project-card ${
-                              draggedProjectId === p.id ? "dragging" : ""
-                            }`}
-                          >
-                            <div className="card-top">
-                              <span className="drag-handle">
-                                <GripVertical size={12} /> {p.id}
-                              </span>
-                              <button
-                                className="icon-button"
-                                onClick={() =>
-                                  openRequirementEditor(p.id, "overview")
-                                }
-                                title="Open requirement workspace"
-                              >
-                                <Pencil size={14} />
-                              </button>
-                            </div>
-                            <h3>{p.company}</h3>
-                            <p>{p.client}</p>
-                            <div className="card-meta">
-                              <span>{p.package || "Unselected"}</span>
-                              <span>
-                                <UserRound size={12} /> {p.assignedTo}
-                              </span>
-                            </div>
-                            <div className="mini-progress">
-                              <span style={{ width: `${p.progress}%` }} />
-                            </div>
-                            <div className="card-footer">
-                              <small>{p.updated}</small>
-                              <select
-                                aria-label={`Move ${p.company}`}
-                                value={p.stage}
-                                onChange={(e) =>
-                                  void moveProject(p, e.target.value as Stage)
-                                }
-                              >
-                                {STAGES.map((s) => (
-                                  <option key={s}>{s}</option>
-                                ))}
-                              </select>
-                            </div>
-                          </article>
-                        ))
+                        stageProjects.map((p) => {
+                          const editable = canEditProject(p);
+                          return (
+                            <article
+                              key={p.id}
+                              draggable
+                              onDragStart={(e) => {
+                                setDraggedProjectId(p.id);
+                                e.dataTransfer.effectAllowed = "move";
+                                e.dataTransfer.setData("text/plain", p.id);
+                              }}
+                              onDragEnd={() => {
+                                setDraggedProjectId(null);
+                                setDragOverStage(null);
+                              }}
+                              className={`project-card ${
+                                draggedProjectId === p.id ? "dragging" : ""
+                              }`}
+                            >
+                              <div className="card-top">
+                                <span className="drag-handle">
+                                  <GripVertical size={12} /> {p.id}
+                                </span>
+                                <button
+                                  className="icon-button"
+                                  onClick={() => openRequirementEditor(p.id)}
+                                  title={
+                                    editable
+                                      ? "Open requirement editor"
+                                      : "View full detailed preview"
+                                  }
+                                >
+                                  {editable ? (
+                                    <Pencil size={14} />
+                                  ) : (
+                                    <Eye size={14} />
+                                  )}
+                                </button>
+                              </div>
+                              <h3>{p.company}</h3>
+                              <p>{p.client}</p>
+                              <div className="card-meta">
+                                <span>{p.package || "Unselected"}</span>
+                                <span>
+                                  <UserRound size={12} /> {p.assignedTo}
+                                </span>
+                              </div>
+                              <div className="mini-progress">
+                                <span style={{ width: `${p.progress}%` }} />
+                              </div>
+                              <div className="card-footer">
+                                <small>{p.updated}</small>
+                                <select
+                                  aria-label={`Move ${p.company}`}
+                                  value={p.stage}
+                                  onChange={(e) =>
+                                    void moveProject(p, e.target.value as Stage)
+                                  }
+                                >
+                                  {STAGES.map((s) => (
+                                    <option key={s}>{s}</option>
+                                  ))}
+                                </select>
+                              </div>
+                            </article>
+                          );
+                        })
                       )}
                     </div>
                   );
@@ -1895,8 +1956,9 @@ export default function Home() {
                   <div className="eyebrow">PEOPLE &amp; ACCESS</div>
                   <h1>Team</h1>
                   <p className="muted">
-                    CoreForge workspace users. Tagged members receive
-                    notifications with sound.
+                    {role === "Admin"
+                      ? "CoreForge workspace users. Manage accounts, passwords, and deletions in Administration."
+                      : "CoreForge workspace team members."}
                   </p>
                 </div>
                 {role === "Admin" && (
@@ -1904,7 +1966,7 @@ export default function Home() {
                     className="primary"
                     onClick={() => setShowInvite(true)}
                   >
-                    <Plus size={16} /> Invite member
+                    <Plus size={16} /> Add user
                   </button>
                 )}
               </div>
@@ -1914,10 +1976,12 @@ export default function Home() {
                   <div>
                     <h2>Workspace members</h2>
                     <p>
-                      Only admins can create accounts and reset passwords.
+                      {role === "Admin"
+                        ? "Active workspace members across Admin and Developer roles."
+                        : "Team members in your CoreForge workspace."}
                     </p>
                   </div>
-                  <span className="soft-tag">2 roles · Admin / Developer</span>
+                  <span className="soft-tag">{team.length} members</span>
                 </div>
 
                 <div className="table-wrap">
@@ -1929,15 +1993,13 @@ export default function Home() {
                         <th>ASSIGNED PROJECTS</th>
                         <th>LAST ACTIVE</th>
                         <th>STATUS</th>
-                        {!supabaseEnabled && <th>SWITCH USER</th>}
                       </tr>
                     </thead>
                     <tbody>
                       {team.map((m) => {
-                        const count = projects.filter(
+                        const count = publishedProjects.filter(
                           (p) => p.assignedToId === m.id || p.ownerId === m.id
                         ).length;
-                        const isSelf = m.id === currentUser.id;
                         return (
                           <tr key={m.id}>
                             <td>
@@ -1965,17 +2027,6 @@ export default function Home() {
                                 {m.active ? "Active" : "Inactive"}
                               </span>
                             </td>
-                            {!supabaseEnabled && (
-                              <td>
-                                <button
-                                  className="secondary compact-btn"
-                                  disabled={isSelf}
-                                  onClick={() => switchActiveMember(m)}
-                                >
-                                  {isSelf ? "Current user" : "Switch to user"}
-                                </button>
-                              </td>
-                            )}
                           </tr>
                         );
                       })}
@@ -1983,18 +2034,6 @@ export default function Home() {
                   </table>
                 </div>
               </section>
-
-              <div className="note-box">
-                <ShieldCheck size={18} />
-                <div>
-                  <b>Workspace accounts</b>
-                  <p>
-                    Configured for Admin (<code>admin@coreforgeindia.com</code>)
-                    and Gagan (<code>gagan@coreforgeindia.com</code>). Add more
-                    users via Supabase Auth Admin APIs or Dashboard.
-                  </p>
-                </div>
-              </div>
             </>
           )}
 
@@ -2078,42 +2117,179 @@ export default function Home() {
             />
           )}
 
-          {active === "Administration" && (
+          {active === "Administration" && role === "Admin" && (
             <>
               <div className="page-title-row">
                 <div>
                   <div className="eyebrow">ADMIN CONTROL CENTRE</div>
                   <h1>Administration</h1>
                   <p className="muted">
-                    Company-level controls for users, permissions and workspace
-                    configuration.
+                    Manage users, reset passwords, delete accounts, and
+                    configure workspace security.
                   </p>
                 </div>
-                <span className="soft-tag">Admin access</span>
+                <button
+                  className="primary"
+                  onClick={() => setShowInvite(true)}
+                >
+                  <Plus size={16} /> Add user
+                </button>
               </div>
 
-              <div className="admin-grid">
-                <div className="surface admin-tile">
-                  <ShieldCheck size={20} />
-                  <h3>User management</h3>
-                  <p>
-                    Manage Admin (<code>admin@coreforgeindia.com</code>) and
-                    Gagan (<code>gagan@coreforgeindia.com</code>).
-                  </p>
-                  <button
-                    className="secondary"
-                    onClick={() => setActive("Team")}
-                  >
-                    Manage users <ArrowUpRight size={14} />
-                  </button>
+              <section className="surface" style={{ marginBottom: 15 }}>
+                <div className="section-head">
+                  <div>
+                    <h2>User management</h2>
+                    <p>
+                      Create workspace accounts, change user passwords, or
+                      delete users.
+                    </p>
+                  </div>
+                  <span className="soft-tag">{team.length} accounts</span>
                 </div>
 
+                <div className="table-wrap">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>USER</th>
+                        <th>ROLE</th>
+                        <th>STATUS</th>
+                        <th>LAST ACTIVE</th>
+                        <th>ACTIONS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {team.map((m) => {
+                        const isSelf = m.id === currentUser.id;
+                        return (
+                          <tr key={m.id}>
+                            <td>
+                              <div className="member-cell">
+                                <div className="avatar">
+                                  {m.name
+                                    .split(" ")
+                                    .map((x) => x[0])
+                                    .join("")
+                                    .slice(0, 2)}
+                                </div>
+                                <div>
+                                  <b>{m.name}</b>
+                                  <small>{m.email}</small>
+                                </div>
+                              </div>
+                            </td>
+                            <td>
+                              <span className="role-pill">{m.role}</span>
+                            </td>
+                            <td>
+                              <span className="status-live">
+                                {m.active ? "Active" : "Inactive"}
+                              </span>
+                            </td>
+                            <td>{m.lastActive}</td>
+                            <td>
+                              <div className="row-actions">
+                                <button
+                                  type="button"
+                                  className="secondary compact-btn"
+                                  onClick={() => {
+                                    setPasswordModalUser(m);
+                                    setUserNewPassword("");
+                                    setUserConfirmPassword("");
+                                  }}
+                                >
+                                  <KeyRound size={12} /> Change password
+                                </button>
+                                <button
+                                  type="button"
+                                  className="secondary compact-btn danger-text"
+                                  disabled={isSelf || deletingUserId === m.id}
+                                  title={
+                                    isSelf
+                                      ? "You cannot delete your active admin account"
+                                      : `Delete ${m.name}`
+                                  }
+                                  onClick={() => void handleDeleteUser(m)}
+                                >
+                                  <Trash2 size={12} />{" "}
+                                  {isSelf
+                                    ? "Current account"
+                                    : deletingUserId === m.id
+                                    ? "Deleting..."
+                                    : "Delete user"}
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+
+              <section className="surface" style={{ marginBottom: 15 }}>
+                <div className="section-head">
+                  <div>
+                    <h2>Change my administrator password</h2>
+                    <p>
+                      Update the password for your signed-in account (
+                      {currentUser.email}).
+                    </p>
+                  </div>
+                  <span className="soft-tag">Account security</span>
+                </div>
+                <form onSubmit={handleChangeOwnPassword}>
+                  <div className="form-grid">
+                    <label>
+                      New password (min 6 characters)
+                      <input
+                        type="password"
+                        value={ownNewPassword}
+                        onChange={(e) => setOwnNewPassword(e.target.value)}
+                        placeholder="Enter new password"
+                        minLength={6}
+                        required
+                      />
+                    </label>
+                    <label>
+                      Confirm new password
+                      <input
+                        type="password"
+                        value={ownConfirmPassword}
+                        onChange={(e) => setOwnConfirmPassword(e.target.value)}
+                        placeholder="Re-enter new password"
+                        minLength={6}
+                        required
+                      />
+                    </label>
+                  </div>
+                  <div className="step-actions" style={{ marginTop: 14 }}>
+                    <span className="small muted">
+                      Takes effect immediately on your account.
+                    </span>
+                    <button
+                      type="submit"
+                      className="primary"
+                      disabled={ownPasswordBusy}
+                    >
+                      <KeyRound size={14} />{" "}
+                      {ownPasswordBusy
+                        ? "Updating..."
+                        : "Update my password"}
+                    </button>
+                  </div>
+                </form>
+              </section>
+
+              <div className="admin-grid">
                 <div className="surface admin-tile">
                   <SlidersHorizontal size={20} />
                   <h3>Editable pricing &amp; coupons</h3>
                   <p>
                     Edit Launch, Growth &amp; Scale pricing, page allowances,
-                    additional page rates and 10%/25%/50% coupons.
+                    additional page rates and promotional coupons.
                   </p>
                   <button
                     className="secondary"
@@ -2137,17 +2313,20 @@ export default function Home() {
                     View audit trail <ArrowUpRight size={14} />
                   </button>
                 </div>
-              </div>
 
-              <div className="note-box">
-                <ShieldCheck size={18} />
-                <div>
-                  <b>Supabase connection status</b>
+                <div className="surface admin-tile">
+                  <ShieldCheck size={20} />
+                  <h3>Workspace team</h3>
                   <p>
-                    {supabaseEnabled
-                      ? "Connected to Supabase Auth, PostgreSQL & Realtime."
-                      : "Paste NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY in .env.local and run supabase/schema.sql in Supabase SQL Editor."}
+                    Inspect assigned project counts and active roles across
+                    CoreForge LLP.
                   </p>
+                  <button
+                    className="secondary"
+                    onClick={() => setActive("Team")}
+                  >
+                    View team <ArrowUpRight size={14} />
+                  </button>
                 </div>
               </div>
             </>
@@ -2161,7 +2340,7 @@ export default function Home() {
                   <h1>Help &amp; documentation</h1>
                   <p className="muted">
                     How CoreForge handles client onboarding, 5-step requirement
-                    collection, pricing, and team notifications.
+                    collection, private drafts, pricing, and team notifications.
                   </p>
                 </div>
               </div>
@@ -2181,18 +2360,17 @@ export default function Home() {
                   </li>
                   <li>
                     <b>03 · Requirements:</b> capture all 11 specification
-                    sections, package-specific conditional features, and tag
-                    teammates with <code>@Name</code>.
+                    sections and package-specific conditional features.
                   </li>
                   <li>
                     <b>04 · Team &amp; assets:</b> assign responsibilities,
-                    upload brand assets, share Drive links, and notify tagged
-                    members.
+                    attach files, share Drive links, and tag teammates.
                   </li>
                   <li>
-                    <b>05 · Review &amp; approval:</b> save drafts anytime,
-                    export JSON, print, print as PDF, or generate the approved
-                    document.
+                    <b>05 · Review &amp; approval:</b> save incomplete progress
+                    privately at any step with <b>Save draft</b> (hidden from
+                    teammates until complete), or click{" "}
+                    <b>Complete &amp; submit to team</b> once finished.
                   </li>
                 </ol>
               </section>
@@ -2281,8 +2459,8 @@ export default function Home() {
         </div>
       )}
 
-      {/* Invite Member Modal */}
-      {showInvite && (
+      {/* Add User Modal */}
+      {showInvite && role === "Admin" && (
         <div
           className="modal-backdrop"
           onMouseDown={(e) => {
@@ -2292,11 +2470,11 @@ export default function Home() {
           <div className="modal">
             <div className="modal-head">
               <div>
-                <div className="eyebrow">TEAM PROVISIONING</div>
-                <h2>Add workspace member</h2>
+                <div className="eyebrow">USER PROVISIONING</div>
+                <h2>Add workspace user</h2>
                 <p>
-                  New members appear immediately in @mention autocomplete and
-                  task assignment.
+                  Create a new user login with name, email, role, and initial
+                  password.
                 </p>
               </div>
               <button
@@ -2314,7 +2492,7 @@ export default function Home() {
                   onChange={(e) =>
                     setInviteForm({ ...inviteForm, name: e.target.value })
                   }
-                  placeholder="e.g. Rohan K."
+                  placeholder="Full name"
                 />
               </label>
               <label>
@@ -2325,7 +2503,7 @@ export default function Home() {
                   onChange={(e) =>
                     setInviteForm({ ...inviteForm, email: e.target.value })
                   }
-                  placeholder="name@coreforgeindia.com"
+                  placeholder="name@company.com"
                 />
               </label>
               <label>
@@ -2343,6 +2521,18 @@ export default function Home() {
                   <option value="Admin">Admin</option>
                 </select>
               </label>
+              <label>
+                Initial password * (min 6 chars)
+                <input
+                  type="password"
+                  value={inviteForm.password}
+                  onChange={(e) =>
+                    setInviteForm({ ...inviteForm, password: e.target.value })
+                  }
+                  placeholder="Minimum 6 characters"
+                  minLength={6}
+                />
+              </label>
             </div>
             <div className="modal-foot">
               <button
@@ -2351,11 +2541,84 @@ export default function Home() {
               >
                 Cancel
               </button>
-              <button className="primary" onClick={handleInviteMember}>
-                Add member <ArrowUpRight size={15} />
+              <button
+                className="primary"
+                disabled={inviteSubmitting}
+                onClick={() => void handleInviteMember()}
+              >
+                {inviteSubmitting ? "Creating..." : "Create user"}{" "}
+                <ArrowUpRight size={15} />
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Change User Password Modal */}
+      {passwordModalUser && role === "Admin" && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) setPasswordModalUser(null);
+          }}
+        >
+          <form className="modal" onSubmit={handleChangeUserPassword}>
+            <div className="modal-head">
+              <div>
+                <div className="eyebrow">USER PASSWORD</div>
+                <h2>Change password for {passwordModalUser.name}</h2>
+                <p>{passwordModalUser.email}</p>
+              </div>
+              <button
+                type="button"
+                className="icon-button"
+                onClick={() => setPasswordModalUser(null)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+            <div className="form-grid">
+              <label>
+                New password * (min 6 chars)
+                <input
+                  type="password"
+                  value={userNewPassword}
+                  onChange={(e) => setUserNewPassword(e.target.value)}
+                  placeholder="Enter new password"
+                  minLength={6}
+                  required
+                />
+              </label>
+              <label>
+                Confirm new password *
+                <input
+                  type="password"
+                  value={userConfirmPassword}
+                  onChange={(e) => setUserConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  minLength={6}
+                  required
+                />
+              </label>
+            </div>
+            <div className="modal-foot">
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setPasswordModalUser(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                className="primary"
+                disabled={userPasswordBusy}
+              >
+                <KeyRound size={14} />{" "}
+                {userPasswordBusy ? "Updating..." : "Update password"}
+              </button>
+            </div>
+          </form>
         </div>
       )}
 
@@ -2370,7 +2633,10 @@ export default function Home() {
           <div className="modal">
             <div className="modal-head">
               <div>
-                <div className="eyebrow">{selected.id}</div>
+                <div className="eyebrow">
+                  {selected.id}
+                  {selected.requirement.isDraft ? " · PRIVATE DRAFT" : ""}
+                </div>
                 <h2>{selected.company}</h2>
                 <p>
                   {selected.client} · {selected.package || "No"} package
@@ -2387,7 +2653,11 @@ export default function Home() {
             <div className="detail-grid">
               <div>
                 <small>PROJECT STAGE</small>
-                <b>{selected.stage}</b>
+                <b>
+                  {selected.requirement.isDraft
+                    ? "Private draft"
+                    : selected.stage}
+                </b>
               </div>
               <div>
                 <small>ASSIGNED DEVELOPER</small>
@@ -2404,31 +2674,44 @@ export default function Home() {
             </div>
 
             <div className="detail-actions">
-              <label>
-                Move stage
-                <select
-                  value={selected.stage}
-                  onChange={(e) =>
-                    void moveProject(selected, e.target.value as Stage)
-                  }
-                >
-                  <option>Requirements</option>
-                  <option>Building</option>
-                  <option>Completed</option>
-                </select>
-              </label>
+              {!selected.requirement.isDraft && (
+                <label>
+                  Move stage
+                  <select
+                    value={selected.stage}
+                    onChange={(e) =>
+                      void moveProject(selected, e.target.value as Stage)
+                    }
+                  >
+                    <option>Requirements</option>
+                    <option>Building</option>
+                    <option>Completed</option>
+                  </select>
+                </label>
+              )}
               <button
                 className="primary"
-                onClick={() => openRequirementEditor(selected.id, "package")}
+                onClick={() => openRequirementEditor(selected.id)}
               >
-                <Pencil size={14} /> Open 5-step requirement
+                {canEditProject(selected) ? (
+                  <>
+                    <Pencil size={14} /> Open 5-step requirement
+                  </>
+                ) : (
+                  <>
+                    <Eye size={14} /> View full detailed preview
+                  </>
+                )}
               </button>
-              {role === "Admin" && (
+              {(role === "Admin" ||
+                (selected.requirement.isDraft &&
+                  selected.ownerId === currentUser.id)) && (
                 <button
                   className="danger-button"
                   onClick={() => deleteProject(selected)}
                 >
-                  <Trash2 size={14} /> Delete
+                  <Trash2 size={14} />{" "}
+                  {selected.requirement.isDraft ? "Discard draft" : "Delete"}
                 </button>
               )}
             </div>
@@ -2468,6 +2751,7 @@ export default function Home() {
 function ProjectTable({
   projects,
   emptyText = "No projects match your search.",
+  canEdit,
   onOpen,
   onEdit,
   onDelete,
@@ -2475,6 +2759,7 @@ function ProjectTable({
 }: {
   projects: Project[];
   emptyText?: string;
+  canEdit?: (p: Project) => boolean;
   onOpen: (p: Project) => void;
   onEdit: (p: Project) => void;
   onDelete?: (p: Project) => void;
@@ -2494,52 +2779,75 @@ function ProjectTable({
           </tr>
         </thead>
         <tbody>
-          {projects.map((p) => (
-            <tr key={p.id}>
-              <td>
-                <button className="project-link" onClick={() => onEdit(p)}>
-                  <b>{p.company}</b>
-                  <small>
-                    {p.id} · {p.client}
-                  </small>
-                </button>
-              </td>
-              <td>{p.assignedTo}</td>
-              <td>{p.package || "—"}</td>
-              <td>
-                <span className={`stage-pill ${p.stage.toLowerCase()}`}>
-                  <i /> {p.stage}
-                </span>
-              </td>
-              <td>{p.updated}</td>
-              <td>
-                <div className="row-actions">
-                  <button
-                    className="secondary compact-btn"
-                    onClick={() => onEdit(p)}
-                  >
-                    <Pencil size={12} /> Open
+          {projects.map((p) => {
+            const editable = canEdit ? canEdit(p) : true;
+            const canRemove = admin || (p.requirement.isDraft && editable);
+            return (
+              <tr key={p.id}>
+                <td>
+                  <button className="project-link" onClick={() => onEdit(p)}>
+                    <b>
+                      {p.company}{" "}
+                      {p.requirement.isDraft && (
+                        <span className="soft-tag" style={{ marginLeft: 6 }}>
+                          Private draft
+                        </span>
+                      )}
+                    </b>
+                    <small>
+                      {p.id} · {p.client}
+                    </small>
                   </button>
-                  <button
-                    className="icon-button"
-                    aria-label="Quick view"
-                    onClick={() => onOpen(p)}
-                  >
-                    <Eye size={16} />
-                  </button>
-                  {admin && onDelete && (
+                </td>
+                <td>{p.assignedTo}</td>
+                <td>{p.package || "—"}</td>
+                <td>
+                  <span className={`stage-pill ${p.stage.toLowerCase()}`}>
+                    <i /> {p.requirement.isDraft ? "Draft" : p.stage}
+                  </span>
+                </td>
+                <td>{p.updated}</td>
+                <td>
+                  <div className="row-actions">
                     <button
-                      className="icon-button danger-text"
-                      aria-label="Delete project"
-                      onClick={() => onDelete(p)}
+                      className="secondary compact-btn"
+                      onClick={() => onEdit(p)}
                     >
-                      <Trash2 size={15} />
+                      {editable ? (
+                        <>
+                          <Pencil size={12} /> Open
+                        </>
+                      ) : (
+                        <>
+                          <Eye size={12} /> Preview
+                        </>
+                      )}
                     </button>
-                  )}
-                </div>
-              </td>
-            </tr>
-          ))}
+                    <button
+                      className="icon-button"
+                      aria-label="Quick view"
+                      onClick={() => onOpen(p)}
+                    >
+                      <Eye size={16} />
+                    </button>
+                    {canRemove && onDelete && (
+                      <button
+                        className="icon-button danger-text"
+                        aria-label={
+                          p.requirement.isDraft
+                            ? "Discard draft"
+                            : "Delete project"
+                        }
+                        onClick={() => onDelete(p)}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
       {projects.length === 0 && <div className="empty-state">{emptyText}</div>}

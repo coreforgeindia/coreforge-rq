@@ -367,24 +367,7 @@ export const DEFAULT_COUPONS: Coupon[] = [
   },
 ];
 
-export const INITIAL_TEAM: TeamMember[] = [
-  {
-    id: "usr-admin",
-    name: "Admin",
-    email: "admin@coreforgeindia.com",
-    role: "Admin",
-    active: true,
-    lastActive: "Today",
-  },
-  {
-    id: "usr-gagan",
-    name: "Gagan",
-    email: "gagan@coreforgeindia.com",
-    role: "Developer",
-    active: true,
-    lastActive: "Today",
-  },
-];
+export const INITIAL_TEAM: TeamMember[] = [];
 
 export function createEmptyRequirement(
   overrides: Partial<RequirementData> = {}
@@ -427,7 +410,9 @@ export function createEmptyRequirement(
     submittedAt: "",
     taggedMemberIds: [],
     comments: [],
-    lastSavedAt: "Just now",
+    lastSavedAt: "Not saved yet",
+    isDraft: true,
+    draftStep: "package",
     ...overrides,
   };
 }

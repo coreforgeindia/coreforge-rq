@@ -120,6 +120,8 @@ export interface RequirementData {
   taggedMemberIds: string[];
   comments: RequirementComment[];
   lastSavedAt: string;
+  isDraft: boolean;
+  draftStep: RequirementStep;
 }
 
 export interface Project {

@@ -8,7 +8,6 @@ import {
   VolumeX,
   AtSign,
   ArrowUpRight,
-  Sparkles,
 } from "lucide-react";
 import type { PortalNotification, RequirementStep } from "@/lib/portal-types";
 
@@ -17,7 +16,6 @@ interface NotificationBellProps {
   currentUserId: string;
   soundEnabled: boolean;
   onToggleSound: () => void;
-  onTestSound: () => void;
   onMarkRead: (id: string) => void;
   onMarkAllRead: () => void;
   onOpenNotification: (projectId: string, step: RequirementStep) => void;
@@ -28,7 +26,6 @@ export function NotificationBell({
   currentUserId,
   soundEnabled,
   onToggleSound,
-  onTestSound,
   onMarkRead,
   onMarkAllRead,
   onOpenNotification,
@@ -82,14 +79,6 @@ export function NotificationBell({
               </small>
             </div>
             <div className="notif-head-actions">
-              <button
-                type="button"
-                className="notif-chip"
-                onClick={onTestSound}
-                title="Play notification chime"
-              >
-                <Sparkles size={12} /> Test sound
-              </button>
               <button
                 type="button"
                 className="notif-chip"

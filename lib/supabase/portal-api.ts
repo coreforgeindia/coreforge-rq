@@ -241,74 +241,101 @@ export async function fetchWorkspaceSnapshot(
   }
 
   // Projects (clients + requirements)
-  const projects: Project[] = (reqsRes.data ?? []).map((r) => {
-    const c = (r.clients as Record<string, unknown>) || {};
-    const ownerMember = teamMap.get(r.created_by);
-    const assignedMember = r.assigned_to ? teamMap.get(r.assigned_to) : undefined;
-    const reqData = createEmptyRequirement({
-      packageSelected: (r.package_name as PackageName) || "",
-      businessType: dbBusinessTypeToUi((c.business_type as string) || null),
-      companyName: String(c.business_name ?? ""),
-      businessDescription: String(c.business_description ?? ""),
-      websitePurpose: String(c.website_purpose ?? ""),
-      websitePurposeOther: String(c.website_purpose_other ?? ""),
-      hasExistingWebsite:
-        (r.has_existing_website as RequirementData["hasExistingWebsite"]) || "",
-      existingWebsiteUrl: String(c.website_url ?? ""),
-      targetAudience: String(c.target_audience ?? ""),
-      selectedPages: Array.isArray(r.selected_pages) ? r.selected_pages : [],
-      customPages: Array.isArray(r.custom_pages) ? r.custom_pages : [],
-      couponCode: String(r.coupon_code ?? ""),
-      extraPages: Number(r.additional_pages_requested ?? 0),
-      extraPagesStatus: dbExtraStatusToUi(r.additional_pages_status),
-      customPriceOverride:
-        r.custom_price_override !== null && r.custom_price_override !== undefined
-          ? Number(r.custom_price_override)
-          : null,
-      customExtraPagePriceOverride:
-        r.custom_extra_page_price_override !== null &&
-        r.custom_extra_page_price_override !== undefined
-          ? Number(r.custom_extra_page_price_override)
-          : null,
-      pricingAdjustmentNote: String(r.pricing_adjustment_note ?? ""),
-      answers: (r.answers as Record<string, string>) || {},
-      featureChoices:
-        (r.feature_choices as RequirementData["featureChoices"]) || {},
-      featureDetails: (r.feature_details as Record<string, string>) || {},
-      agencyInternalNotes: String(r.agency_internal_notes ?? ""),
-      clientTeam: {
-        ...createEmptyRequirement().clientTeam,
-        ...((r.client_team as Record<string, string>) || {}),
-      },
-      driveLink: String(r.drive_link ?? ""),
-      files: Array.isArray(r.files_meta) ? r.files_meta : [],
-      confirmed: Boolean(r.client_confirmed),
-      approvedByName: String(r.client_approved_name ?? ""),
-      submittedAt: String(r.submitted_at_label ?? ""),
-      taggedMemberIds: Array.isArray(r.tagged_member_ids)
-        ? r.tagged_member_ids
-        : [],
-      comments: commentsByReq.get(r.id) ?? [],
-      lastSavedAt: formatDbTimestamp(r.updated_at),
-    });
+  const projects: Project[] = (reqsRes.data ?? [])
+    .map((r) => {
+      const c = (r.clients as Record<string, unknown>) || {};
+      const ownerMember = teamMap.get(r.created_by);
+      const assignedMember = r.assigned_to
+        ? teamMap.get(r.assigned_to)
+        : undefined;
+      const rawClientTeam =
+        (r.client_team as Record<string, unknown> | null) || {};
+      const {
+        __isDraft: metaIsDraft,
+        __draftStep: metaDraftStep,
+        ...cleanClientTeam
+      } = rawClientTeam;
+      const isDraft =
+        typeof r.is_draft === "boolean"
+          ? r.is_draft
+          : Boolean(metaIsDraft ?? false);
+      const draftStep = (
+        typeof r.draft_step === "string" && r.draft_step
+          ? r.draft_step
+          : typeof metaDraftStep === "string" && metaDraftStep
+          ? metaDraftStep
+          : "package"
+      ) as RequirementStep;
 
-    return {
-      id: r.project_code,
-      dbRequirementId: r.id,
-      dbClientId: r.client_id,
-      client: String(c.client_name ?? ""),
-      company: String(c.business_name ?? ""),
-      ownerId: r.created_by,
-      owner: ownerMember?.name ?? "Admin",
-      assignedToId: r.assigned_to || r.created_by,
-      assignedTo: assignedMember?.name ?? ownerMember?.name ?? "Unassigned",
-      stage: dbStageToUi(r.stage),
-      updated: formatDbTimestamp(r.updated_at),
-      package: (r.package_name as PackageName) || "",
-      progress: Number(r.progress ?? 0),
-      requirement: reqData,
-    };
-  });
+      const reqData = createEmptyRequirement({
+        packageSelected: (r.package_name as PackageName) || "",
+        businessType: dbBusinessTypeToUi((c.business_type as string) || null),
+        companyName: String(c.business_name ?? ""),
+        businessDescription: String(c.business_description ?? ""),
+        websitePurpose: String(c.website_purpose ?? ""),
+        websitePurposeOther: String(c.website_purpose_other ?? ""),
+        hasExistingWebsite:
+          (r.has_existing_website as RequirementData["hasExistingWebsite"]) ||
+          "",
+        existingWebsiteUrl: String(c.website_url ?? ""),
+        targetAudience: String(c.target_audience ?? ""),
+        selectedPages: Array.isArray(r.selected_pages) ? r.selected_pages : [],
+        customPages: Array.isArray(r.custom_pages) ? r.custom_pages : [],
+        couponCode: String(r.coupon_code ?? ""),
+        extraPages: Number(r.additional_pages_requested ?? 0),
+        extraPagesStatus: dbExtraStatusToUi(r.additional_pages_status),
+        customPriceOverride:
+          r.custom_price_override !== null &&
+          r.custom_price_override !== undefined
+            ? Number(r.custom_price_override)
+            : null,
+        customExtraPagePriceOverride:
+          r.custom_extra_page_price_override !== null &&
+          r.custom_extra_page_price_override !== undefined
+            ? Number(r.custom_extra_page_price_override)
+            : null,
+        pricingAdjustmentNote: String(r.pricing_adjustment_note ?? ""),
+        answers: (r.answers as Record<string, string>) || {},
+        featureChoices:
+          (r.feature_choices as RequirementData["featureChoices"]) || {},
+        featureDetails: (r.feature_details as Record<string, string>) || {},
+        agencyInternalNotes: String(r.agency_internal_notes ?? ""),
+        clientTeam: {
+          ...createEmptyRequirement().clientTeam,
+          ...(cleanClientTeam as Record<string, string>),
+        },
+        driveLink: String(r.drive_link ?? ""),
+        files: Array.isArray(r.files_meta) ? r.files_meta : [],
+        confirmed: Boolean(r.client_confirmed),
+        approvedByName: String(r.client_approved_name ?? ""),
+        submittedAt: String(r.submitted_at_label ?? ""),
+        taggedMemberIds: Array.isArray(r.tagged_member_ids)
+          ? r.tagged_member_ids
+          : [],
+        comments: commentsByReq.get(r.id) ?? [],
+        lastSavedAt: formatDbTimestamp(r.updated_at),
+        isDraft,
+        draftStep,
+      });
+
+      return {
+        id: r.project_code,
+        dbRequirementId: r.id,
+        dbClientId: r.client_id,
+        client: String(c.client_name ?? ""),
+        company: String(c.business_name ?? ""),
+        ownerId: r.created_by,
+        owner: ownerMember?.name ?? "Team",
+        assignedToId: r.assigned_to || r.created_by,
+        assignedTo: assignedMember?.name ?? ownerMember?.name ?? "Unassigned",
+        stage: dbStageToUi(r.stage),
+        updated: formatDbTimestamp(r.updated_at),
+        package: (r.package_name as PackageName) || "",
+        progress: Number(r.progress ?? 0),
+        requirement: reqData,
+      };
+    })
+    .filter((p) => !p.requirement.isDraft || p.ownerId === authUserId);
 
   // Activity logs
   const activities: ActivityItem[] = (activityRes.data ?? []).map((a) => {
@@ -376,20 +403,27 @@ export async function fetchWorkspaceSnapshot(
   };
 }
 
+function isMissingDraftColumnError(err: { code?: string; message?: string } | null): boolean {
+  if (!err) return false;
+  const msg = `${err.code ?? ""} ${err.message ?? ""}`.toLowerCase();
+  return msg.includes("is_draft") || msg.includes("draft_step") || msg.includes("42703") || msg.includes("pgrst204");
+}
+
 export async function createClientRequirementInDb(
   supabase: SupabaseClient,
   companyId: string,
   userId: string,
   project: Project,
-  pricing: PricingSettings
+  pricing: PricingSettings,
+  coupons: Coupon[] = []
 ): Promise<{ dbClientId: string; dbRequirementId: string }> {
   const req = project.requirement;
   const { data: clientRow, error: clientErr } = await supabase
     .from("clients")
     .insert({
       company_id: companyId,
-      client_name: project.client,
-      business_name: project.company,
+      client_name: req.clientTeam.contactPerson || project.client,
+      business_name: req.companyName || project.company,
       email: req.clientTeam.contactEmail || null,
       phone: req.clientTeam.contactPhone || null,
       business_type: uiBusinessTypeToDb(req.businessType),
@@ -408,56 +442,91 @@ export async function createClientRequirementInDb(
     throw new Error(clientErr?.message || "Failed to create client record.");
   }
 
-  const pkgCfg = project.package
-    ? pricing.packages[project.package]
-    : pricing.packages.Launch;
+  const pkgName = req.packageSelected || project.package || null;
+  const pkgCfg = pkgName ? pricing.packages[pkgName] : undefined;
+  const matchedCoupon = coupons.find(
+    (c) => c.code.toUpperCase() === req.couponCode.trim().toUpperCase()
+  );
 
-  const { data: reqRow, error: reqErr } = await supabase
+  const baseReqPayload = {
+    company_id: companyId,
+    client_id: clientRow.id,
+    project_code: project.id,
+    package_name: pkgName,
+    package_price: pkgCfg?.price ?? 0,
+    included_pages: pkgCfg?.limit ?? 5,
+    coupon_id: matchedCoupon?.id ?? null,
+    coupon_code: req.couponCode || null,
+    coupon_bonus_pages:
+      matchedCoupon?.benefitType === "bonus_pages"
+        ? matchedCoupon.bonusPages
+        : 0,
+    selected_pages: req.selectedPages,
+    custom_pages: req.customPages,
+    additional_pages_requested: req.extraPages,
+    additional_pages_status: uiExtraStatusToDb(req.extraPagesStatus),
+    hosting_included: pricing.hostingIncluded,
+    hosting_frequency: pricing.hostingFrequency,
+    has_existing_website: req.hasExistingWebsite,
+    answers: req.answers,
+    feature_choices: req.featureChoices,
+    feature_details: req.featureDetails,
+    client_team: {
+      ...req.clientTeam,
+      __isDraft: req.isDraft,
+      __draftStep: req.draftStep,
+    },
+    drive_link: req.driveLink,
+    files_meta: req.files,
+    agency_internal_notes: req.agencyInternalNotes,
+    custom_price_override: req.customPriceOverride,
+    custom_extra_page_price_override: req.customExtraPagePriceOverride,
+    pricing_adjustment_note: req.pricingAdjustmentNote,
+    tagged_member_ids: req.taggedMemberIds,
+    assigned_to: project.assignedToId || userId,
+    stage: uiStageToDb(project.stage),
+    progress: project.progress,
+    client_confirmed: req.confirmed,
+    client_approved_name: req.approvedByName,
+    client_approved_at: req.confirmed ? new Date().toISOString() : null,
+    submitted_at_label: req.submittedAt,
+    created_by: userId,
+    updated_by: userId,
+  };
+
+  let { data: reqRow, error: reqErr } = await supabase
     .from("requirements")
     .insert({
-      company_id: companyId,
-      client_id: clientRow.id,
-      project_code: project.id,
-      package_name: project.package || "Launch",
-      package_price: pkgCfg?.price ?? 0,
-      included_pages: pkgCfg?.limit ?? 5,
-      coupon_code: req.couponCode || null,
-      selected_pages: req.selectedPages,
-      custom_pages: req.customPages,
-      additional_pages_requested: req.extraPages,
-      additional_pages_status: uiExtraStatusToDb(req.extraPagesStatus),
-      hosting_included: pricing.hostingIncluded,
-      hosting_frequency: pricing.hostingFrequency,
-      has_existing_website: req.hasExistingWebsite,
-      answers: req.answers,
-      feature_choices: req.featureChoices,
-      feature_details: req.featureDetails,
-      client_team: req.clientTeam,
-      drive_link: req.driveLink,
-      files_meta: req.files,
-      agency_internal_notes: req.agencyInternalNotes,
-      assigned_to: project.assignedToId || userId,
-      stage: uiStageToDb(project.stage),
-      progress: project.progress,
-      created_by: userId,
-      updated_by: userId,
+      ...baseReqPayload,
+      is_draft: req.isDraft,
+      draft_step: req.draftStep,
     })
     .select("id")
     .single();
+
+  if (isMissingDraftColumnError(reqErr)) {
+    ({ data: reqRow, error: reqErr } = await supabase
+      .from("requirements")
+      .insert(baseReqPayload)
+      .select("id")
+      .single());
+  }
 
   if (reqErr || !reqRow) {
     throw new Error(reqErr?.message || "Failed to create requirement record.");
   }
 
-  await appendActivityInDb(
-    supabase,
-    companyId,
-    userId,
-    "requirement_created",
-    "requirement",
-    project.company,
-    "created a requirement for"
-  );
+  if (!req.isDraft) {
+    await appendActivityInDb(
+      supabase,
+      companyId,
+      userId,
+      "requirement_created",
+      "requirement",
+      req.companyName || project.company,
+      "created a requirement for"
+    );
+  }
 
   return { dbClientId: clientRow.id, dbRequirementId: reqRow.id };
 }
@@ -498,46 +567,63 @@ export async function saveRequirementInDb(
 
   if (clientErr) throw new Error(clientErr.message);
 
-  const { error: reqErr } = await supabase
+  const baseReqUpdate = {
+    package_name: req.packageSelected || null,
+    package_price: pkgCfg?.price ?? 0,
+    included_pages: pkgCfg?.limit ?? 5,
+    coupon_id: matchedCoupon?.id ?? null,
+    coupon_code: req.couponCode || null,
+    coupon_bonus_pages:
+      matchedCoupon?.benefitType === "bonus_pages"
+        ? matchedCoupon.bonusPages
+        : 0,
+    selected_pages: req.selectedPages,
+    custom_pages: req.customPages,
+    additional_pages_requested: req.extraPages,
+    additional_pages_status: uiExtraStatusToDb(req.extraPagesStatus),
+    hosting_included: pricing.hostingIncluded,
+    hosting_frequency: pricing.hostingFrequency,
+    has_existing_website: req.hasExistingWebsite,
+    answers: req.answers,
+    feature_choices: req.featureChoices,
+    feature_details: req.featureDetails,
+    client_team: {
+      ...req.clientTeam,
+      __isDraft: req.isDraft,
+      __draftStep: req.draftStep,
+    },
+    drive_link: req.driveLink,
+    files_meta: req.files,
+    agency_internal_notes: req.agencyInternalNotes,
+    custom_price_override: req.customPriceOverride,
+    custom_extra_page_price_override: req.customExtraPagePriceOverride,
+    pricing_adjustment_note: req.pricingAdjustmentNote,
+    tagged_member_ids: req.taggedMemberIds,
+    assigned_to: project.assignedToId || null,
+    stage: uiStageToDb(project.stage),
+    progress: project.progress,
+    client_confirmed: req.confirmed,
+    client_approved_name: req.approvedByName,
+    client_approved_at: req.confirmed ? new Date().toISOString() : null,
+    submitted_at_label: req.submittedAt,
+    updated_by: userId,
+  };
+
+  let { error: reqErr } = await supabase
     .from("requirements")
     .update({
-      package_name: req.packageSelected || null,
-      package_price: pkgCfg?.price ?? 0,
-      included_pages: pkgCfg?.limit ?? 5,
-      coupon_id: matchedCoupon?.id ?? null,
-      coupon_code: req.couponCode || null,
-      coupon_bonus_pages:
-        matchedCoupon?.benefitType === "bonus_pages"
-          ? matchedCoupon.bonusPages
-          : 0,
-      selected_pages: req.selectedPages,
-      custom_pages: req.customPages,
-      additional_pages_requested: req.extraPages,
-      additional_pages_status: uiExtraStatusToDb(req.extraPagesStatus),
-      hosting_included: pricing.hostingIncluded,
-      hosting_frequency: pricing.hostingFrequency,
-      has_existing_website: req.hasExistingWebsite,
-      answers: req.answers,
-      feature_choices: req.featureChoices,
-      feature_details: req.featureDetails,
-      client_team: req.clientTeam,
-      drive_link: req.driveLink,
-      files_meta: req.files,
-      agency_internal_notes: req.agencyInternalNotes,
-      custom_price_override: req.customPriceOverride,
-      custom_extra_page_price_override: req.customExtraPagePriceOverride,
-      pricing_adjustment_note: req.pricingAdjustmentNote,
-      tagged_member_ids: req.taggedMemberIds,
-      assigned_to: project.assignedToId || null,
-      stage: uiStageToDb(project.stage),
-      progress: project.progress,
-      client_confirmed: req.confirmed,
-      client_approved_name: req.approvedByName,
-      client_approved_at: req.confirmed ? new Date().toISOString() : null,
-      submitted_at_label: req.submittedAt,
-      updated_by: userId,
+      ...baseReqUpdate,
+      is_draft: req.isDraft,
+      draft_step: req.draftStep,
     })
     .eq("id", project.dbRequirementId);
+
+  if (isMissingDraftColumnError(reqErr)) {
+    ({ error: reqErr } = await supabase
+      .from("requirements")
+      .update(baseReqUpdate)
+      .eq("id", project.dbRequirementId));
+  }
 
   if (reqErr) throw new Error(reqErr.message);
 }
@@ -552,27 +638,41 @@ export async function updateStageInDb(
 ): Promise<void> {
   if (!project.dbRequirementId) return;
   const dbStage = uiStageToDb(stage);
-  const { error } = await supabase
-    .from("requirements")
-    .update({
-      stage: dbStage,
-      progress,
-      completed_at: dbStage === "completed" ? new Date().toISOString() : null,
-      updated_by: userId,
-    })
-    .eq("id", project.dbRequirementId);
+  const { error: rpcErr } = await supabase.rpc("update_project_stage", {
+    p_requirement_id: project.dbRequirementId,
+    p_stage: dbStage,
+    p_progress: progress,
+  });
 
-  if (error) throw new Error(error.message);
+  if (rpcErr) {
+    const rpcMsg = `${rpcErr.code ?? ""} ${rpcErr.message ?? ""}`.toLowerCase();
+    if (rpcMsg.includes("update_project_stage") || rpcMsg.includes("pgrst202") || rpcMsg.includes("42883")) {
+      const { error } = await supabase
+        .from("requirements")
+        .update({
+          stage: dbStage,
+          progress,
+          completed_at: dbStage === "completed" ? new Date().toISOString() : null,
+          updated_by: userId,
+        })
+        .eq("id", project.dbRequirementId);
+      if (error) throw new Error(error.message);
+    } else {
+      throw new Error(rpcErr.message);
+    }
+  }
 
-  await appendActivityInDb(
-    supabase,
-    companyId,
-    userId,
-    "stage_changed",
-    "requirement",
-    project.company,
-    `moved project to ${stage}`
-  );
+  if (!project.requirement.isDraft) {
+    await appendActivityInDb(
+      supabase,
+      companyId,
+      userId,
+      "stage_changed",
+      "requirement",
+      project.company,
+      `moved project to ${stage}`
+    );
+  }
 }
 
 export async function deleteProjectInDb(
@@ -582,15 +682,17 @@ export async function deleteProjectInDb(
   project: Project
 ): Promise<void> {
   if (!project.dbClientId) return;
-  await appendActivityInDb(
-    supabase,
-    companyId,
-    userId,
-    "requirement_deleted",
-    "client",
-    project.company,
-    "deleted requirement for"
-  );
+  if (!project.requirement.isDraft) {
+    await appendActivityInDb(
+      supabase,
+      companyId,
+      userId,
+      "requirement_deleted",
+      "client",
+      project.company,
+      "deleted requirement for"
+    );
+  }
   const { error } = await supabase
     .from("clients")
     .delete()
@@ -863,5 +965,56 @@ export async function appendActivityInDb(
     entity_id: entityId,
     summary,
   });
+}
+
+export async function createWorkspaceUserInDb(
+  supabase: SupabaseClient,
+  params: {
+    fullName: string;
+    email: string;
+    password: string;
+    role: Role;
+  }
+): Promise<string> {
+  const { data, error } = await supabase.rpc("admin_create_user", {
+    p_full_name: params.fullName.trim(),
+    p_email: params.email.trim().toLowerCase(),
+    p_password: params.password,
+    p_role: params.role === "Admin" ? "admin" : "developer",
+  });
+  if (error) throw new Error(error.message);
+  return String(data);
+}
+
+export async function updateUserPasswordInDb(
+  supabase: SupabaseClient,
+  userId: string,
+  newPassword: string
+): Promise<void> {
+  const { error } = await supabase.rpc("admin_update_user_password", {
+    p_user_id: userId,
+    p_new_password: newPassword,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function deleteWorkspaceUserInDb(
+  supabase: SupabaseClient,
+  userId: string
+): Promise<void> {
+  const { error } = await supabase.rpc("admin_delete_user", {
+    p_user_id: userId,
+  });
+  if (error) throw new Error(error.message);
+}
+
+export async function updateOwnPasswordInDb(
+  supabase: SupabaseClient,
+  newPassword: string
+): Promise<void> {
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+  if (error) throw new Error(error.message);
 }
 
